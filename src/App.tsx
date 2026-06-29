@@ -95,15 +95,15 @@ export default function App() {
   const [lang, setLang] = useState<Language>('ar');
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
+  const [downloadingFormat, setDownloadingFormat] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [uploadingCookies, setUploadingCookies] = useState(false);
-  const [platformName, setPlatformName] = useState('');
-  const [uploadingOtherCookies, setUploadingOtherCookies] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const otherFileInputRef = useRef<HTMLInputElement>(null);
+  const [analysisTime, setAnalysisTime] = useState<number | null>(null);
+  const [fromCache, setFromCache] = useState(false);
+  
+  // تم إزالة منطق رفع ملفات Cookies من الواجهة فقط بينما بقي مدعوماً في الخادم
 
   const t = translations[lang];
   const isAr = lang === 'ar';
@@ -127,6 +127,7 @@ export default function App() {
     }
 
     setLoading(true);
+    const startTime = performance.now();
 
     try {
       const controller = new AbortController();
@@ -142,12 +143,15 @@ export default function App() {
       clearTimeout(timeoutId);
 
       const data = await response.json();
+      const endTime = performance.now();
 
       if (!response.ok || !data.success) {
         setError(data.error || t.networkError);
       } else {
         setVideoInfo(data.info);
         setTaskId(data.taskId);
+        setAnalysisTime(Number(((endTime - startTime) / 1000).toFixed(2)));
+        setFromCache(data.fromCache || false);
       }
     } catch (err: any) {
       if (err.name === 'AbortError') {
@@ -164,6 +168,8 @@ export default function App() {
   const handleDownload = (format: VideoFormat) => {
     if (!taskId) return;
     
+    setDownloadingFormat(format.format_id);
+    
     // التحميل عبر الخادم الوسيط
     const downloadUrl = `/api/download?taskId=${taskId}&formatId=${format.format_id}`;
     
@@ -176,76 +182,12 @@ export default function App() {
     document.body.removeChild(a);
     
     setToast(isAr ? 'بدأ التحميل...' : 'Download started...');
-    setTimeout(() => setToast(null), 3000);
-  };
-
-  const handleUploadCookies = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setUploadingCookies(true);
-    const formData = new FormData();
-    formData.append('cookiesFile', file);
-
-    try {
-      const res = await fetch('/api/upload-cookies', {
-        method: 'POST',
-        body: formData
-      });
-      const data = await res.json();
-      if (data.success) {
-        setToast(t.cookiesUploaded);
-      } else {
-        setError(data.error || t.cookiesFailed);
-      }
-    } catch (err) {
-      setError(t.cookiesFailed);
-    } finally {
-      setUploadingCookies(false);
-      // مسح الملف المختار للسماح برفعه مرة أخرى إذا لزم الأمر
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
-      setTimeout(() => setToast(null), 3000);
-    }
-  };
-
-  const handleUploadOtherCookies = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
     
-    if (!platformName.trim()) {
-        setError(isAr ? 'يرجى إدخال اسم المنصة أولاً.' : 'Please enter platform name first.');
-        if (otherFileInputRef.current) otherFileInputRef.current.value = '';
-        return;
-    }
-
-    setUploadingOtherCookies(true);
-    const formData = new FormData();
-    formData.append('cookiesFile', file);
-
-    try {
-      const cleanPlatform = platformName.trim().toLowerCase();
-      const res = await fetch(`/api/upload-cookies/${encodeURIComponent(cleanPlatform)}`, {
-        method: 'POST',
-        body: formData
-      });
-      const data = await res.json();
-      if (data.success) {
-        setToast(isAr ? `تم رفع ملف cookies_${cleanPlatform}.txt بنجاح!` : `Cookies for ${cleanPlatform} uploaded successfully!`);
-        setPlatformName(''); // إعادة تعيين الحقل
-      } else {
-        setError(data.error || (isAr ? 'فشل رفع ملف الكوكيز.' : 'Failed to upload cookies.'));
-      }
-    } catch (err) {
-      setError(isAr ? 'فشل رفع ملف الكوكيز.' : 'Failed to upload cookies.');
-    } finally {
-      setUploadingOtherCookies(false);
-      if (otherFileInputRef.current) {
-        otherFileInputRef.current.value = '';
-      }
-      setTimeout(() => setToast(null), 3000);
-    }
+    // إزالة حالة التحميل بعد فترة قصيرة
+    setTimeout(() => {
+      setDownloadingFormat(null);
+      setToast(null);
+    }, 3000);
   };
 
   const categorizeFormat = (f: VideoFormat) => {
@@ -400,7 +342,7 @@ export default function App() {
                   </div>
                 </div>
                 
-                <div className="flex flex-col gap-2 text-sm text-slate-300 bg-slate-900/50 p-4 rounded-xl border border-slate-700/50">
+                  <div className="flex flex-col gap-2 text-sm text-slate-300 bg-slate-900/50 p-4 rounded-xl border border-slate-700/50">
                   <div className="flex items-center gap-2">
                     <User className="w-4 h-4 text-slate-400" />
                     <span className="truncate">{videoInfo.uploader || 'غير معروف'}</span>
@@ -409,6 +351,18 @@ export default function App() {
                     <Globe className="w-4 h-4 text-slate-400" />
                     <span className="capitalize">{videoInfo.extractor}</span>
                   </div>
+                  {analysisTime !== null && (
+                    <div className="flex items-center gap-2 text-green-400 mt-2 border-t border-slate-700 pt-2">
+                      <Clock className="w-4 h-4" />
+                      <span>{isAr ? `استغرق التحليل: ${analysisTime} ثانية` : `Analysis took: ${analysisTime}s`}</span>
+                    </div>
+                  )}
+                  {fromCache && (
+                    <div className="flex items-center gap-2 text-blue-400">
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>{isAr ? 'تم التحليل من الذاكرة المؤقتة.' : 'Analyzed from cache.'}</span>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -451,9 +405,17 @@ export default function App() {
                       <div className="flex items-center gap-2">
                         <button
                           onClick={() => handleDownload(format)}
-                          className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition-colors flex items-center gap-2"
+                          disabled={downloadingFormat === format.format_id}
+                          className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:bg-slate-600 disabled:text-slate-400 text-white text-sm font-semibold transition-colors flex items-center gap-2"
                         >
-                          {t.downloadAction}
+                          {downloadingFormat === format.format_id ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              {t.downloadingState}
+                            </>
+                          ) : (
+                            t.downloadAction
+                          )}
                         </button>
                       </div>
                     </div>
@@ -468,76 +430,7 @@ export default function App() {
           )}
         </AnimatePresence>
 
-        {/* Upload Cookies Section */}
-        <div className="mt-16 w-full max-w-xl mx-auto text-center">
-          <input 
-            type="file" 
-            accept=".txt"
-            ref={fileInputRef}
-            onChange={handleUploadCookies}
-            className="hidden"
-            id="cookies-upload"
-          />
-          <label 
-            htmlFor="cookies-upload" 
-            className={`cursor-pointer inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl border-2 border-dashed border-slate-600 hover:border-blue-500 hover:bg-blue-500/10 transition-colors text-slate-300 hover:text-blue-400 ${uploadingCookies ? 'opacity-50 cursor-not-allowed' : ''}`}
-          >
-            {uploadingCookies ? (
-              <Loader2 className="w-5 h-5 animate-spin" />
-            ) : (
-              <Upload className="w-5 h-5" />
-            )}
-            <span className="font-medium text-sm">
-              {uploadingCookies ? t.uploadingCookies : t.uploadCookies}
-            </span>
-          </label>
-        </div>
-
-        {/* Upload Other Platforms Cookies Section */}
-        <div className="mt-8 w-full max-w-xl mx-auto text-center bg-slate-800/40 p-6 rounded-2xl border border-slate-700/50 shadow-lg">
-          <h3 className="text-lg font-semibold mb-4 text-slate-300">
-            {isAr ? 'إدارة ملفات Cookies للمنصات الأخرى' : 'Manage Cookies for Other Platforms'}
-          </h3>
-          <div className="flex flex-col sm:flex-row gap-4 items-center justify-center">
-            <input 
-              type="text"
-              value={platformName}
-              onChange={(e) => setPlatformName(e.target.value)}
-              placeholder={isAr ? 'اسم المنصة (مثال: instagram, tiktok)' : 'Platform name (e.g., instagram)'}
-              className="bg-slate-700/80 border border-slate-600 rounded-xl px-4 py-3 text-slate-200 outline-none focus:border-purple-500 w-full sm:w-auto transition-colors"
-              dir="ltr"
-            />
-            
-            <input 
-              type="file" 
-              accept=".txt"
-              ref={otherFileInputRef}
-              onChange={handleUploadOtherCookies}
-              className="hidden"
-              id="other-cookies-upload"
-            />
-            <button 
-              type="button"
-              onClick={() => {
-                if (!platformName.trim()) {
-                  setError(isAr ? 'يرجى إدخال اسم المنصة أولاً.' : 'Please enter platform name first.');
-                  return;
-                }
-                otherFileInputRef.current?.click();
-              }}
-              className={`inline-flex w-full sm:w-auto shrink-0 items-center justify-center gap-2 px-6 py-3 rounded-xl border-2 border-dashed border-slate-600 hover:border-purple-500 hover:bg-purple-500/10 transition-colors text-slate-300 hover:text-purple-400 ${uploadingOtherCookies ? 'opacity-50 cursor-not-allowed' : ''}`}
-            >
-              {uploadingOtherCookies ? (
-                <Loader2 className="w-5 h-5 animate-spin" />
-              ) : (
-                <Upload className="w-5 h-5" />
-              )}
-              <span className="font-medium text-sm">
-                {uploadingOtherCookies ? (isAr ? 'جاري الرفع...' : 'Uploading...') : (isAr ? 'رفع ملف المنصة' : 'Upload File')}
-              </span>
-            </button>
-          </div>
-        </div>
+        {/* تم إزالة قسم رفع ملفات Cookies من الواجهة فقط */}
       </main>
 
       {/* Footer */}

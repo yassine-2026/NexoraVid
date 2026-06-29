@@ -46,21 +46,24 @@ let downloadPromise: Promise<boolean> | null = null;
 // لتخزين نتائج التحليل مع taskId
 const cache = new Map<string, any>();
 
-// دالة لتنظيف الذاكرة المؤقتة كل 10 دقائق لمنع تسرب الذاكرة
+// دالة لتنظيف الذاكرة المؤقتة كل 30 دقيقة لمنع تسرب الذاكرة
 setInterval(() => {
   const now = Date.now();
   for (const [key, value] of cache.entries()) {
-    if (now - value.timestamp > 10 * 60 * 1000) {
+    if (now - value.timestamp > 30 * 60 * 1000) {
       cache.delete(key);
     }
   }
 }, 60 * 1000);
+
+let ytdlpVersion = 'unknown';
 
 // دالة مساعدة لتحميل ملف التشغيل الخاص بـ yt-dlp في حال لم يكن موجوداً
 async function ensureYtDlp() {
   if (fs.existsSync(YTDLP_PATH)) {
     const stats = fs.statSync(YTDLP_PATH);
     if (stats.size > 1000000) { // Should be ~30MB
+      await updateYtDlp();
       return;
     }
   }
@@ -83,7 +86,7 @@ async function ensureYtDlp() {
         if (process.platform !== 'win32') fs.chmodSync(YTDLP_PATH, '755');
         console.log("تم تحميل yt-dlp بنجاح.");
         downloadPromise = null;
-        resolve(true);
+        updateYtDlp().then(() => resolve(true)).catch(() => resolve(true));
       }
     });
   });
@@ -91,16 +94,67 @@ async function ensureYtDlp() {
   return downloadPromise;
 }
 
+// تحديث yt-dlp عند تشغيل الخادم لأول مرة فقط
+async function updateYtDlp() {
+  return new Promise<void>((resolve) => {
+    console.log("جاري تحديث yt-dlp...");
+    execFile(YTDLP_PATH, ['-U'], (error, stdout) => {
+      if (error) {
+        console.error("فشل تحديث yt-dlp (تم التجاهل للاستمرار):", error);
+      } else {
+        console.log("تم تحديث yt-dlp بنجاح:\n", stdout);
+      }
+      
+      // استخراج الإصدار الحقيقي
+      execFile(YTDLP_PATH, ['--version'], (verError, verStdout) => {
+         if (!verError && verStdout) {
+             ytdlpVersion = verStdout.trim();
+         }
+         resolve();
+      });
+    });
+  });
+}
+
+// Health Check Endpoint
+app.get("/api/health", (req, res) => {
+  res.json({
+    status: "ok",
+    ytdlp_version: ytdlpVersion
+  });
+});
+
+
 // 1. نقطة النهاية لتحليل الرابط واستخراج البيانات
-app.post("/api/analyze", async (req, res) => {
-  const { url } = req.body;
-  if (!url || !url.startsWith("http")) {
-    return res.status(400).json({ success: false, error: "رابط غير صالح" });
-  }
-
-  const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
-
+app.post("/api/analyze", async (req, res, next) => {
   try {
+    const { url } = req.body;
+    if (!url || !url.startsWith("http")) {
+      return res.status(400).json({ success: false, error: "رابط غير صالح" });
+    }
+
+    // التحقق من الـ Cache أولاً
+    for (const [key, value] of cache.entries()) {
+      if (value.originalUrl === url) {
+        if (Date.now() - value.timestamp <= 30 * 60 * 1000) {
+          console.log(`Serving from cache: ${url}`);
+          const safeFormats = value.info.formats.map((f: any) => ({
+              format_id: f.format_id,
+              ext: f.ext,
+              resolution: f.resolution || (f.height ? `${f.height}p` : 'صوت فقط'),
+              filesize: f.filesize || f.filesize_approx,
+              vcodec: f.vcodec !== 'none',
+              acodec: f.acodec !== 'none',
+              format_note: f.format_note
+          }));
+          const safeInfo = { ...value.info, formats: safeFormats };
+          return res.json({ success: true, taskId: key, info: safeInfo, fromCache: true });
+        }
+      }
+    }
+
+    const isYouTube = url.includes('youtube.com') || url.includes('youtu.be');
+
     await ensureYtDlp();
 
     console.log(`Analyzing URL: ${url}`);
@@ -130,26 +184,41 @@ app.post("/api/analyze", async (req, res) => {
       });
 
       // إعادة البيانات للواجهة بنفس التنسيق الحالي
-      res.json({ success: true, taskId, info: safeInfo });
+      res.json({ success: true, taskId, info: safeInfo, fromCache: false });
     };
 
-    const runYtDlp = (targetUrl: string, timeout = 30000, extraArgs: string[] = []): Promise<any> => {
-      return new Promise((resolve, reject) => {
-        const cmdArgs = [
-          "--dump-json",
-          "--no-playlist",
-          "--no-check-certificate",
-          "--no-warnings"
-        ];
-        
-        cmdArgs.push(...extraArgs);
-        cmdArgs.push(targetUrl);
-        
-        execFile(YTDLP_PATH, cmdArgs, { maxBuffer: 1024 * 1024 * 10, timeout }, (error, stdout, stderr) => {
-           if (error) reject({ error, stderr });
-           else resolve(stdout);
-        });
-      });
+    const runYtDlp = async (targetUrl: string, extraArgs: string[] = [], retries = 1): Promise<any> => {
+      let currentTry = 0;
+      while (currentTry <= retries) {
+        try {
+          return await new Promise((resolve, reject) => {
+            const cmdArgs = [
+              "--dump-json",
+              "--skip-download",
+              "--no-playlist",
+              "--no-check-certificate",
+              "--socket-timeout", "10",
+              "--no-warnings"
+            ];
+            
+            cmdArgs.push(...extraArgs);
+            cmdArgs.push(targetUrl);
+            
+            execFile(YTDLP_PATH, cmdArgs, { maxBuffer: 1024 * 1024 * 10, timeout: 45000 }, (error, stdout, stderr) => {
+               if (error) reject({ error, stderr });
+               else resolve(stdout);
+            });
+          });
+        } catch (err: any) {
+          currentTry++;
+          // إذا كان الخطأ بسبب Timeout نعيد المحاولة مرة واحدة
+          if (err.error && err.error.killed && currentTry <= retries) {
+            console.log(`Timeout occurred. Retrying (${currentTry}/${retries})...`);
+            continue;
+          }
+          throw err;
+        }
+      }
     };
     
     const processYtDlpOutput = (stdout: string) => {
@@ -170,8 +239,25 @@ app.post("/api/analyze", async (req, res) => {
     };
 
     if (isYouTube) {
-        // التحقق من وجود ملف الكوكيز
-        if (!fs.existsSync(COOKIES_PATH)) {
+        // ترتيب البحث لملفات يوتيوب كما طلب المستخدم
+        // سبب الاحتفاظ بالملف "cookies.txt" كخيار احتياطي ليوتيوب هو للتوافق مع الإصدارات القديمة
+        const youtubeCookiePaths = [
+            path.join(DATA_DIR, 'cookies_youtube_com.txt'),
+            path.join(DATA_DIR, 'cookies_youtube.txt'),
+            COOKIES_PATH // data/cookies.txt
+        ];
+
+        let selectedCookiePath = null;
+        // ترتيب الأولوية في اختيار ملف Cookies ليوتيوب
+        for (const cp of youtubeCookiePaths) {
+            if (fs.existsSync(cp)) {
+                selectedCookiePath = cp;
+                break;
+            }
+        }
+
+        // التحقق من وجود أي من ملفات الكوكيز ليوتيوب
+        if (!selectedCookiePath) {
             return res.status(400).json({
                 success: false,
                 error: "ملف cookies.txt غير موجود. ارفعه أولاً من واجهة الموقع."
@@ -179,19 +265,20 @@ app.post("/api/analyze", async (req, res) => {
         }
 
         try {
-            console.log("Analyzing YouTube Video with cookies.txt...");
+            console.log(`Analyzing YouTube Video with ${path.basename(selectedCookiePath)}...`);
             
             // استخدام الكوكيز المرفوعة فقط مع yt-dlp
             const extraArgs = [
-               "--cookies", COOKIES_PATH,
+               "--cookies", selectedCookiePath,
                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-               "--js-runtimes", `node:${process.execPath}`
+               "--js-runtimes", `node:${process.execPath}`,
+               "--extractor-args", "youtube:player_client=ios"
             ];
             
             // تنظيف الرابط من معلمات التتبع إن وجدت
             const cleanUrl = url.split('&')[0];
             
-            const stdout = await runYtDlp(cleanUrl, 30000, extraArgs);
+            const stdout = await runYtDlp(cleanUrl, extraArgs);
             const { info, fullFormats } = processYtDlpOutput(stdout);
             
             // تخزين النتائج في الذاكرة (Cache) وأعد البيانات
@@ -204,6 +291,7 @@ app.post("/api/analyze", async (req, res) => {
                 const match = e.stderr.match(/ERROR: (.*)/);
                 if (match) errorMessage = `خطأ من يوتيوب: ${match[1]}`;
             }
+            if (e.error && e.error.killed) errorMessage = "انتهت مهلة التحليل. يرجى المحاولة مرة أخرى.";
             return res.status(400).json({ success: false, error: errorMessage });
         }
     } else {
@@ -212,7 +300,7 @@ app.post("/api/analyze", async (req, res) => {
          const extraArgs = [
            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
          ];
-         const stdout = await runYtDlp(url, 30000, extraArgs);
+         const stdout = await runYtDlp(url, extraArgs);
          const { info, fullFormats } = processYtDlpOutput(stdout);
          return saveAndRespond(info, fullFormats);
        } catch (e: any) {
@@ -225,36 +313,59 @@ app.post("/api/analyze", async (req, res) => {
                               stderrLower.includes('cookies');
                               
          if (needsCookies) {
-             // استخراج اسم المنصة من الرابط تلقائياً
-             const platformMatch = url.match(/(?:https?:\/\/)?(?:www\.)?([^./]+)\./i);
-             const platformName = platformMatch ? platformMatch[1].toLowerCase() : 'unknown';
+             // استخراج Domain و Platform
+             // استخراج اسم النطاق الكامل (Domain)
+             // مثال: instagram.com أو tiktok.com
+             const domainMatch = url.match(/(?:https?:\/\/)?(?:www\.)?([^/]+)/i);
+             const rawDomain = domainMatch ? domainMatch[1].toLowerCase() : 'unknown';
              
-             const platformCookiePath = path.join(DATA_DIR, `cookies_${platformName}.txt`);
+             // استخراج اسم المنصة الأساسي (Platform) عن طريق حذف الامتدادات الشائعة
+             // نحذف .com, .net, .org, .co وأي امتداد مشابه ليتبقى اسم المنصة فقط
+             const platform = rawDomain.replace(/\.(com|net|org|co|info|biz|tv|me|io|be|app|xyz)(?:\.[a-z]{2})?$/i, '');
+             
+             // استبدال النقاط في الـ Domain بشرطة سفلية
+             const domainSafe = rawDomain.replace(/\./g, '_');
+             
+             // سبب البحث بأكثر من اسم هو لدعم الملفات المرفوعة بالاسمين
+             const domainCookiePath = path.join(DATA_DIR, `cookies_${domainSafe}.txt`);
+             const platformCookiePath = path.join(DATA_DIR, `cookies_${platform}.txt`);
+             
+             let selectedCookiePath = null;
+             
+             // ترتيب الأولوية في اختيار ملف Cookies:
+             // أولاً: data/cookies_{domain}.txt
+             // إذا لم يوجد، ثانياً: data/cookies_{platform}.txt
+             if (fs.existsSync(domainCookiePath)) {
+                 selectedCookiePath = domainCookiePath;
+             } else if (fs.existsSync(platformCookiePath)) {
+                 selectedCookiePath = platformCookiePath;
+             }
              
              // التحقق من وجود ملف الكوكيز الخاص بالمنصة
-             if (fs.existsSync(platformCookiePath)) {
+             if (selectedCookiePath) {
                  try {
-                     console.log(`Analyzing ${platformName} Video with cookies_${platformName}.txt...`);
+                     console.log(`Analyzing ${platform} Video with ${path.basename(selectedCookiePath)}...`);
                      const retryArgs = [
-                         "--cookies", platformCookiePath,
+                         "--cookies", selectedCookiePath,
                          "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
                      ];
-                     const stdoutRetry = await runYtDlp(url, 30000, retryArgs);
+                     const stdoutRetry = await runYtDlp(url, retryArgs);
                      const { info, fullFormats } = processYtDlpOutput(stdoutRetry);
                      return saveAndRespond(info, fullFormats);
                  } catch (retryError: any) {
-                     let errorMessage = `تعذر استخراج البيانات من ${platformName} حتى مع استخدام ملف الكوكيز.`;
+                     let errorMessage = `تعذر استخراج البيانات من ${platform} حتى مع استخدام ملف الكوكيز.`;
                      if (retryError.stderr) {
                          const match = retryError.stderr.match(/ERROR: (.*)/);
-                         if (match) errorMessage = `خطأ من ${platformName}: ${match[1]}`;
+                         if (match) errorMessage = `خطأ من ${platform}: ${match[1]}`;
                      }
+                     if (retryError.error && retryError.error.killed) errorMessage = "انتهت مهلة التحليل. يرجى المحاولة مرة أخرى.";
                      return res.status(400).json({ success: false, error: errorMessage });
                  }
              } else {
-                 // في حال عدم وجود الملف، نطلب من المستخدم رفعه
+                 // في حال عدم وجود الملف، نرجع الرسالة العربية كما طلب المستخدم
                  return res.status(400).json({
                      success: false,
-                     error: `هذه المنصة تتطلب ملف Cookies. يرجى رفع الملف cookies_${platformName}.txt من واجهة الموقع.`
+                     error: `هذه المنصة تحتاج ملف Cookies. يرجى رفع الملف cookies_${domainSafe}.txt.`
                  });
              }
          } else {
@@ -269,8 +380,7 @@ app.post("/api/analyze", async (req, res) => {
        }
     }
   } catch (err) {
-    console.error("Server error:", err);
-    res.status(500).json({ success: false, error: "حدث خطأ في الخادم أثناء محاولة معالجة الرابط." });
+    next(err); // استخدام معالج الأخطاء العام لـ Express
   }
 });
 
@@ -384,6 +494,12 @@ async function startServer() {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  // معالج عام للأخطاء
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error("Unhandled error:", err);
+    res.status(500).json({ success: false, error: "حدث خطأ غير متوقع في الخادم." });
+  });
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
