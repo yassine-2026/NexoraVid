@@ -26,8 +26,12 @@ const upload = multer({
       cb(null, DATA_DIR);
     },
     filename: (req, file, cb) => {
-      // حفظ الملف باسم cookies.txt دائماً
-      cb(null, 'cookies.txt');
+      // حفظ الملف باسم cookies.txt لليوتيوب، أو باسم مخصص للمنصات الأخرى
+      if (req.params && req.params.platform) {
+        cb(null, `cookies_${req.params.platform.toLowerCase()}.txt`);
+      } else {
+        cb(null, 'cookies.txt');
+      }
     }
   })
 });
@@ -203,7 +207,7 @@ app.post("/api/analyze", async (req, res) => {
             return res.status(400).json({ success: false, error: errorMessage });
         }
     } else {
-       // تشغيل المنصات الأخرى بشكل اعتيادي بدون كوكيز
+       // تشغيل المنصات الأخرى بشكل اعتيادي بدون كوكيز أولاً
        try {
          const extraArgs = [
            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -212,13 +216,56 @@ app.post("/api/analyze", async (req, res) => {
          const { info, fullFormats } = processYtDlpOutput(stdout);
          return saveAndRespond(info, fullFormats);
        } catch (e: any) {
-         let errorMessage = "تعذر استخراج البيانات من الرابط. قد يكون غير مدعوم أو خاص.";
-         if (e.stderr) {
-            const match = e.stderr.match(/ERROR: (.*)/);
-            if (match) errorMessage = `خطأ من الخادم: ${match[1]}`;
+         // التحقق مما إذا كان الخطأ يتطلب ملف كوكيز
+         const stderrLower = (e.stderr || "").toLowerCase();
+         const needsCookies = stderrLower.includes('login') || 
+                              stderrLower.includes('empty media response') ||
+                              stderrLower.includes('private') ||
+                              stderrLower.includes('sign in') ||
+                              stderrLower.includes('cookies');
+                              
+         if (needsCookies) {
+             // استخراج اسم المنصة من الرابط تلقائياً
+             const platformMatch = url.match(/(?:https?:\/\/)?(?:www\.)?([^./]+)\./i);
+             const platformName = platformMatch ? platformMatch[1].toLowerCase() : 'unknown';
+             
+             const platformCookiePath = path.join(DATA_DIR, `cookies_${platformName}.txt`);
+             
+             // التحقق من وجود ملف الكوكيز الخاص بالمنصة
+             if (fs.existsSync(platformCookiePath)) {
+                 try {
+                     console.log(`Analyzing ${platformName} Video with cookies_${platformName}.txt...`);
+                     const retryArgs = [
+                         "--cookies", platformCookiePath,
+                         "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                     ];
+                     const stdoutRetry = await runYtDlp(url, 30000, retryArgs);
+                     const { info, fullFormats } = processYtDlpOutput(stdoutRetry);
+                     return saveAndRespond(info, fullFormats);
+                 } catch (retryError: any) {
+                     let errorMessage = `تعذر استخراج البيانات من ${platformName} حتى مع استخدام ملف الكوكيز.`;
+                     if (retryError.stderr) {
+                         const match = retryError.stderr.match(/ERROR: (.*)/);
+                         if (match) errorMessage = `خطأ من ${platformName}: ${match[1]}`;
+                     }
+                     return res.status(400).json({ success: false, error: errorMessage });
+                 }
+             } else {
+                 // في حال عدم وجود الملف، نطلب من المستخدم رفعه
+                 return res.status(400).json({
+                     success: false,
+                     error: `هذه المنصة تتطلب ملف Cookies. يرجى رفع الملف cookies_${platformName}.txt من واجهة الموقع.`
+                 });
+             }
+         } else {
+             let errorMessage = "تعذر استخراج البيانات من الرابط. قد يكون غير مدعوم أو خاص.";
+             if (e.stderr) {
+                const match = e.stderr.match(/ERROR: (.*)/);
+                if (match) errorMessage = `خطأ من الخادم: ${match[1]}`;
+             }
+             if (e.error && e.error.killed) errorMessage = "انتهت مهلة التحليل. يرجى المحاولة مرة أخرى.";
+             return res.status(400).json({ success: false, error: errorMessage });
          }
-         if (e.error && e.error.killed) errorMessage = "انتهت مهلة التحليل. يرجى المحاولة مرة أخرى.";
-         return res.status(400).json({ success: false, error: errorMessage });
        }
     }
   } catch (err) {
@@ -299,7 +346,7 @@ app.get("/api/download", (req, res) => {
   streamFromUrl(directUrl);
 });
 
-// 3. نقطة النهاية لرفع ملف الكوكيز (Upload Cookies)
+// 3. نقطة النهاية لرفع ملف الكوكيز لليوتيوب
 app.post("/api/upload-cookies", upload.single("cookiesFile"), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ success: false, error: "لم يتم إرسال أي ملف." });
@@ -307,7 +354,19 @@ app.post("/api/upload-cookies", upload.single("cookiesFile"), (req, res) => {
   
   res.json({
     success: true,
-    message: "تم رفع ملف الكوكيز بنجاح."
+    message: "تم رفع ملف الكوكيز لليوتيوب بنجاح."
+  });
+});
+
+// 4. نقطة النهاية لرفع ملفات الكوكيز للمنصات الأخرى
+app.post("/api/upload-cookies/:platform", upload.single("cookiesFile"), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ success: false, error: "لم يتم إرسال أي ملف." });
+  }
+  
+  res.json({
+    success: true,
+    message: `تم رفع ملف الكوكيز للمنصة ${req.params.platform} بنجاح.`
   });
 });
 

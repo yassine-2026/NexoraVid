@@ -100,7 +100,10 @@ export default function App() {
   const [taskId, setTaskId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [uploadingCookies, setUploadingCookies] = useState(false);
+  const [platformName, setPlatformName] = useState('');
+  const [uploadingOtherCookies, setUploadingOtherCookies] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const otherFileInputRef = useRef<HTMLInputElement>(null);
 
   const t = translations[lang];
   const isAr = lang === 'ar';
@@ -202,6 +205,44 @@ export default function App() {
       // مسح الملف المختار للسماح برفعه مرة أخرى إذا لزم الأمر
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
+      }
+      setTimeout(() => setToast(null), 3000);
+    }
+  };
+
+  const handleUploadOtherCookies = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    if (!platformName.trim()) {
+        setError(isAr ? 'يرجى إدخال اسم المنصة أولاً.' : 'Please enter platform name first.');
+        if (otherFileInputRef.current) otherFileInputRef.current.value = '';
+        return;
+    }
+
+    setUploadingOtherCookies(true);
+    const formData = new FormData();
+    formData.append('cookiesFile', file);
+
+    try {
+      const cleanPlatform = platformName.trim().toLowerCase();
+      const res = await fetch(`/api/upload-cookies/${encodeURIComponent(cleanPlatform)}`, {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+      if (data.success) {
+        setToast(isAr ? `تم رفع ملف cookies_${cleanPlatform}.txt بنجاح!` : `Cookies for ${cleanPlatform} uploaded successfully!`);
+        setPlatformName(''); // إعادة تعيين الحقل
+      } else {
+        setError(data.error || (isAr ? 'فشل رفع ملف الكوكيز.' : 'Failed to upload cookies.'));
+      }
+    } catch (err) {
+      setError(isAr ? 'فشل رفع ملف الكوكيز.' : 'Failed to upload cookies.');
+    } finally {
+      setUploadingOtherCookies(false);
+      if (otherFileInputRef.current) {
+        otherFileInputRef.current.value = '';
       }
       setTimeout(() => setToast(null), 3000);
     }
@@ -450,6 +491,52 @@ export default function App() {
               {uploadingCookies ? t.uploadingCookies : t.uploadCookies}
             </span>
           </label>
+        </div>
+
+        {/* Upload Other Platforms Cookies Section */}
+        <div className="mt-8 w-full max-w-xl mx-auto text-center bg-slate-800/40 p-6 rounded-2xl border border-slate-700/50 shadow-lg">
+          <h3 className="text-lg font-semibold mb-4 text-slate-300">
+            {isAr ? 'إدارة ملفات Cookies للمنصات الأخرى' : 'Manage Cookies for Other Platforms'}
+          </h3>
+          <div className="flex flex-col sm:flex-row gap-4 items-center justify-center">
+            <input 
+              type="text"
+              value={platformName}
+              onChange={(e) => setPlatformName(e.target.value)}
+              placeholder={isAr ? 'اسم المنصة (مثال: instagram, tiktok)' : 'Platform name (e.g., instagram)'}
+              className="bg-slate-700/80 border border-slate-600 rounded-xl px-4 py-3 text-slate-200 outline-none focus:border-purple-500 w-full sm:w-auto transition-colors"
+              dir="ltr"
+            />
+            
+            <input 
+              type="file" 
+              accept=".txt"
+              ref={otherFileInputRef}
+              onChange={handleUploadOtherCookies}
+              className="hidden"
+              id="other-cookies-upload"
+            />
+            <button 
+              type="button"
+              onClick={() => {
+                if (!platformName.trim()) {
+                  setError(isAr ? 'يرجى إدخال اسم المنصة أولاً.' : 'Please enter platform name first.');
+                  return;
+                }
+                otherFileInputRef.current?.click();
+              }}
+              className={`inline-flex w-full sm:w-auto shrink-0 items-center justify-center gap-2 px-6 py-3 rounded-xl border-2 border-dashed border-slate-600 hover:border-purple-500 hover:bg-purple-500/10 transition-colors text-slate-300 hover:text-purple-400 ${uploadingOtherCookies ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              {uploadingOtherCookies ? (
+                <Loader2 className="w-5 h-5 animate-spin" />
+              ) : (
+                <Upload className="w-5 h-5" />
+              )}
+              <span className="font-medium text-sm">
+                {uploadingOtherCookies ? (isAr ? 'جاري الرفع...' : 'Uploading...') : (isAr ? 'رفع ملف المنصة' : 'Upload File')}
+              </span>
+            </button>
+          </div>
         </div>
       </main>
 
