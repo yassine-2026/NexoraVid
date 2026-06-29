@@ -684,6 +684,23 @@ app.post("/api/upload-cookies/:platform", upload.single("cookiesFile"), (req, re
   });
 });
 
+// 5. نقطة النهاية للاتصال بنا
+app.post("/api/contact", (req, res) => {
+  const { name, email, subject, message } = req.body;
+  if (!name || !email || !subject || !message) {
+    return res.status(400).json({ success: false, error: "جميع الحقول مطلوبة" });
+  }
+  
+  // Here you would typically send an email or save to a database.
+  // For now, we'll just acknowledge the receipt.
+  console.log(`Contact message received from ${name} (${email}): ${subject}`);
+  
+  res.json({
+    success: true,
+    message: "تم استلام رسالتك بنجاح."
+  });
+});
+
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
