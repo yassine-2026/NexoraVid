@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Download, Link as LinkIcon, Loader2, AlertCircle, CheckCircle2, Globe, FileVideo, Music, Clock, User, X, Upload } from 'lucide-react';
+import { Download, Link as LinkIcon, Loader2, AlertCircle, CheckCircle2, Globe, FileVideo, Music, Clock, User, Upload } from 'lucide-react';
 
 type Language = 'ar' | 'en';
 
@@ -176,11 +176,35 @@ export default function App() {
     setTimeout(() => setToast(null), 3000);
   };
 
-  const handleCopyLink = (linkUrl: string) => {
-    navigator.clipboard.writeText(linkUrl).then(() => {
-      setToast(t.linkCopied);
+  const handleUploadCookies = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploadingCookies(true);
+    const formData = new FormData();
+    formData.append('cookiesFile', file);
+
+    try {
+      const res = await fetch('/api/upload-cookies', {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+      if (data.success) {
+        setToast(t.cookiesUploaded);
+      } else {
+        setError(data.error || t.cookiesFailed);
+      }
+    } catch (err) {
+      setError(t.cookiesFailed);
+    } finally {
+      setUploadingCookies(false);
+      // مسح الملف المختار للسماح برفعه مرة أخرى إذا لزم الأمر
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
       setTimeout(() => setToast(null), 3000);
-    });
+    }
   };
 
   const categorizeFormat = (f: VideoFormat) => {
@@ -403,6 +427,30 @@ export default function App() {
           )}
         </AnimatePresence>
 
+        {/* Upload Cookies Section */}
+        <div className="mt-16 w-full max-w-xl mx-auto text-center">
+          <input 
+            type="file" 
+            accept=".txt"
+            ref={fileInputRef}
+            onChange={handleUploadCookies}
+            className="hidden"
+            id="cookies-upload"
+          />
+          <label 
+            htmlFor="cookies-upload" 
+            className={`cursor-pointer inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl border-2 border-dashed border-slate-600 hover:border-blue-500 hover:bg-blue-500/10 transition-colors text-slate-300 hover:text-blue-400 ${uploadingCookies ? 'opacity-50 cursor-not-allowed' : ''}`}
+          >
+            {uploadingCookies ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : (
+              <Upload className="w-5 h-5" />
+            )}
+            <span className="font-medium text-sm">
+              {uploadingCookies ? t.uploadingCookies : t.uploadCookies}
+            </span>
+          </label>
+        </div>
       </main>
 
       {/* Footer */}
@@ -427,4 +475,3 @@ export default function App() {
     </div>
   );
 }
-

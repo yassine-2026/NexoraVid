@@ -7,15 +7,30 @@ import http from "http";
 import crypto from "crypto";
 import { execFile } from "child_process";
 import { createServer as createViteServer } from "vite";
-import puppeteer from "puppeteer-extra";
-import StealthPlugin from "puppeteer-extra-plugin-stealth";
-
-// تفعيل إضافة التخفي لتجاوز حماية يوتيوب (Stealth Mode)
-puppeteer.use(StealthPlugin());
+import multer from "multer";
 
 const app = express();
 const PORT = parseInt(process.env.PORT as string, 10) || 3000;
 const YTDLP_PATH = path.resolve(process.cwd(), 'yt-dlp');
+const DATA_DIR = path.resolve(process.cwd(), 'data');
+const COOKIES_PATH = path.join(DATA_DIR, 'cookies.txt');
+
+// إعداد رفع الملفات باستخدام multer
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      // إنشاء مجلد data إذا لم يكن موجوداً
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
+      cb(null, DATA_DIR);
+    },
+    filename: (req, file, cb) => {
+      // حفظ الملف باسم cookies.txt دائماً
+      cb(null, 'cookies.txt');
+    }
+  })
+});
 
 app.use(express.json());
 // تفعيل CORS للسماح بالطلبات من أي نطاق
@@ -70,23 +85,6 @@ async function ensureYtDlp() {
   });
 
   return downloadPromise;
-}
-
-// دالة لتحويل كوكيز Puppeteer إلى صيغة Netscape (لكي يفهمها yt-dlp)
-function formatCookiesToNetscape(cookies: any[]) {
-  let out = "# Netscape HTTP Cookie File\n# https://curl.haxx.se/rfc/cookie_spec.html\n# This is a generated file!  Do not edit.\n\n";
-  for (const cookie of cookies) {
-    const domain = cookie.domain || '';
-    const domainFlag = domain.startsWith('.') ? 'TRUE' : 'FALSE';
-    const path = cookie.path || '/';
-    const secure = cookie.secure ? 'TRUE' : 'FALSE';
-    // نعالج قيمة expires بحيث تكون صحيحة لصيغة Netscape
-    const expires = cookie.expires && cookie.expires !== -1 ? Math.floor(cookie.expires) : 0;
-    const name = cookie.name;
-    const value = cookie.value;
-    out += `${domain}\t${domainFlag}\t${path}\t${secure}\t${expires}\t${name}\t${value}\n`;
-  }
-  return out;
 }
 
 // 1. نقطة النهاية لتحليل الرابط واستخراج البيانات
@@ -168,97 +166,36 @@ app.post("/api/analyze", async (req, res) => {
     };
 
     if (isYouTube) {
-        // تنفيذ خطوات يوتيوب عبر Puppeteer + yt-dlp
-        let cookieFilePath = '';
-        try {
-            console.log("Analyzing YouTube Video with Puppeteer + yt-dlp...");
-            
-            // 1. شغل متصفح Chromium خفي باستخدام Puppeteer
-            const browser = await puppeteer.launch({ 
-                headless: 'new', // يعمل بشكل خفي
-                args: [
-                  '--no-sandbox', 
-                  '--disable-setuid-sandbox',
-                  '--disable-dev-shm-usage',
-                  '--disable-accelerated-2d-canvas',
-                  '--disable-gpu'
-                ] // إعدادات مهمة لتجنب الأخطاء على سيرفرات مثل Render
+        // التحقق من وجود ملف الكوكيز
+        if (!fs.existsSync(COOKIES_PATH)) {
+            return res.status(400).json({
+                success: false,
+                error: "ملف cookies.txt غير موجود. ارفعه أولاً من واجهة الموقع."
             });
-            let cookies: any[] = [];
-            let userAgent = '';
+        }
+
+        try {
+            console.log("Analyzing YouTube Video with cookies.txt...");
             
-            try {
-                const page = await browser.newPage();
-                
-                // 2. افتح صفحة الفيديو
-                await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-                
-                // 3. انتظر حوالي 5 ثواني حتى يكتمل تحميل الصفحة
-                await new Promise(r => setTimeout(r, 5000));
-                
-                // 4. إذا ظهرت نافذة الكوكيز وفيها زر: Accept all اضغط عليه تلقائياً
-                try {
-                   await page.evaluate(() => {
-                       const btns = Array.from(document.querySelectorAll('button, span'));
-                       const acceptBtn = btns.find(b => {
-                           const text = (b.textContent || '').toLowerCase();
-                           return text.includes('accept all') || text.includes('agree') || text.includes('قبول');
-                       });
-                       if (acceptBtn) { 
-                           (acceptBtn as HTMLElement).click(); 
-                       }
-                   });
-                   // ننتظر قليلاً بعد الضغط في حال تغيير الكوكيز
-                   await new Promise(r => setTimeout(r, 2000));
-                } catch (e) {}
-                
-                // 5. استخراج جميع الكوكيز
-                cookies = await page.cookies();
-                userAgent = await browser.userAgent();
-            } finally {
-                // 6. أغلق المتصفح مباشرة ولا تترك عمليات تعمل في الخلفية
-                await browser.close();
-            }
-            
-            // 7. حول الكوكيز إلى صيغة Netscape
-            const netscapeCookies = formatCookiesToNetscape(cookies);
-            
-            // 8. احفظها داخل مجلد temp (مثلاً temp/cookies-youtube-{id}.txt)
-            const tempDir = path.resolve(process.cwd(), 'temp');
-            if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
-            
-            const uuid = crypto.randomUUID();
-            cookieFilePath = path.join(tempDir, `cookies-youtube-${uuid}.txt`);
-            fs.writeFileSync(cookieFilePath, netscapeCookies);
-            
-            // تنظيف الرابط من معلمات التتبع
-            const cleanUrl = url.split('&')[0];
-            
-            // 9. شغّل yt-dlp مع ملف الكوكيز المؤقت
+            // استخدام الكوكيز المرفوعة فقط مع yt-dlp
             const extraArgs = [
-               "--cookies", cookieFilePath,
-               "--user-agent", userAgent,
+               "--cookies", COOKIES_PATH,
+               "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                "--js-runtimes", `node:${process.execPath}`
             ];
+            
+            // تنظيف الرابط من معلمات التتبع إن وجدت
+            const cleanUrl = url.split('&')[0];
             
             const stdout = await runYtDlp(cleanUrl, 30000, extraArgs);
             const { info, fullFormats } = processYtDlpOutput(stdout);
             
-            // 10. بعد انتهاء yt-dlp احذف ملف الكوكيز المؤقت
-            if (fs.existsSync(cookieFilePath)) {
-               fs.unlinkSync(cookieFilePath);
-            }
-            
-            // 11. خزن النتائج في الذاكرة (Cache) وأعد البيانات
+            // تخزين النتائج في الذاكرة (Cache) وأعد البيانات
             return saveAndRespond(info, fullFormats);
             
         } catch (e: any) {
-            // حذف ملف الكوكيز في حال حدث خطأ
-            if (cookieFilePath && fs.existsSync(cookieFilePath)) {
-                fs.unlinkSync(cookieFilePath);
-            }
             console.error("YouTube Error:", e);
-            let errorMessage = "تعذر استخراج البيانات من اليوتيوب. تأكد من أن الفيديو عام وغير محذوف.";
+            let errorMessage = "تعذر استخراج البيانات من اليوتيوب. تأكد من صلاحية الكوكيز أو أن الفيديو غير محذوف.";
             if (e.stderr) {
                 const match = e.stderr.match(/ERROR: (.*)/);
                 if (match) errorMessage = `خطأ من يوتيوب: ${match[1]}`;
@@ -266,7 +203,7 @@ app.post("/api/analyze", async (req, res) => {
             return res.status(400).json({ success: false, error: errorMessage });
         }
     } else {
-       // تشغيل المنصات الأخرى بشكل اعتيادي
+       // تشغيل المنصات الأخرى بشكل اعتيادي بدون كوكيز
        try {
          const extraArgs = [
            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -315,7 +252,7 @@ app.get("/api/download", (req, res) => {
 
   console.log(`Starting proxy download for: ${fileName}`);
 
-  // تعيين رؤوس الإجبار على التحميل
+  // تعيين رؤوس الإجبار على التحميل (Content-Disposition: attachment)
   res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(fileName)}"`);
   res.setHeader("Content-Type", "application/octet-stream");
 
@@ -360,6 +297,18 @@ app.get("/api/download", (req, res) => {
   };
 
   streamFromUrl(directUrl);
+});
+
+// 3. نقطة النهاية لرفع ملف الكوكيز (Upload Cookies)
+app.post("/api/upload-cookies", upload.single("cookiesFile"), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ success: false, error: "لم يتم إرسال أي ملف." });
+  }
+  
+  res.json({
+    success: true,
+    message: "تم رفع ملف الكوكيز بنجاح."
+  });
 });
 
 async function startServer() {
