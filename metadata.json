@@ -1,6 +1,6 @@
 {
-  "name": "",
-  "description": "",
+  "name": "NexoraVid",
+  "description": "Download videos from YouTube, TikTok, and 20+ other platforms in up to 8K resolution.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

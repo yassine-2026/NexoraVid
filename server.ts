@@ -227,8 +227,15 @@ app.post("/api/analyze", async (req, res, next) => {
         const data = JSON.parse(stdout);
         
         // سبب تجاهل الصيغ التي لا تحتوي على رابط مباشر: لضمان تقديم خيارات للمستخدم قابلة للتحميل فعلياً
+        // تم التعديل لدعم جميع الجودات حتى 8K (4320p) لملفات mp4 و webm
         const fullFormats = data.formats
-          .filter((f: any) => f.url && f.url.trim() !== '' && f.url.startsWith('http') && f.ext !== 'mhtml' && (f.vcodec !== 'none' || f.acodec !== 'none'))
+          .filter((f: any) => 
+            f.url && 
+            f.url.trim() !== '' && 
+            f.url.startsWith('http') && 
+            ['mp4', 'webm', 'm4a', 'mp3'].includes(f.ext) && 
+            (f.vcodec !== 'none' || f.acodec !== 'none')
+          )
           .reverse();
 
         if (fullFormats.length === 0) {
@@ -547,7 +554,113 @@ app.get("/api/download", async (req, res, next) => {
   }
 });
 
-// 3. نقطة النهاية لرفع ملف الكوكيز لليوتيوب
+// 3. نقطة النهاية لمعاينة الفيديو المباشر
+app.get("/api/stream", async (req, res) => {
+  const { taskId, formatId } = req.query;
+  
+  if (!taskId || typeof taskId !== 'string') {
+    return res.status(400).json({ success: false, error: "Missing taskId" });
+  }
+
+  const cachedData = cache.get(taskId);
+  if (!cachedData) {
+    return res.status(404).json({ success: false, error: "انتهت صلاحية الجلسة، يرجى المحاولة مرة أخرى." });
+  }
+
+  const originalUrl = cachedData.originalUrl;
+  const cookiePath = cachedData.cookiePath;
+  let targetFormat = formatId as string;
+  
+  if (!targetFormat) {
+     // اختيار جودة مناسبة للمعاينة (أفضل جودة mp4 لا تتجاوز 1080p مع صوت وفيديو)
+     const previewFormats = cachedData.info.formats.filter((f: any) => 
+        f.ext === 'mp4' && 
+        f.vcodec !== 'none' && 
+        f.acodec !== 'none' && 
+        (f.resolution && !f.resolution.includes('صوت') ? parseInt(f.resolution) <= 1080 : true)
+     );
+     
+     if (previewFormats.length > 0) {
+       targetFormat = previewFormats[0].format_id;
+     } else {
+       targetFormat = "best[ext=mp4]/best";
+     }
+  }
+
+  const streamVideo = (requestedFormatId: string, isFallback: boolean = false, retryCount: number = 0) => {
+    let cmdArgs = ["-f", requestedFormatId, "-g", "--no-warnings"];
+    if (cookiePath) cmdArgs.push("--cookies", cookiePath);
+    cmdArgs.push("--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+    if (originalUrl.includes("youtube.com") || originalUrl.includes("youtu.be")) {
+      cmdArgs.push("--js-runtimes", `node:${process.execPath}`, "--extractor-args", "youtube:player_client=ios");
+    }
+    cmdArgs.push(originalUrl);
+
+    execFile(YTDLP_PATH, cmdArgs, { timeout: 30000 }, (error, stdout, stderr) => {
+       if (error) {
+           if (retryCount === 0 && !isFallback) {
+              return streamVideo(requestedFormatId, false, 1);
+           } else if (!isFallback) {
+              return streamVideo("best[ext=mp4]/best", true, 0);
+           } else {
+              return res.status(500).json({ success: false, error: "فشل استخراج رابط المعاينة" });
+           }
+       }
+       
+       const streamUrl = stdout.trim().split('\n')[0];
+       if (!streamUrl) {
+           return res.status(500).json({ success: false, error: "لم يتم العثور على رابط مباشر" });
+       }
+       
+       const range = req.headers.range;
+       const headers: any = {
+           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+       };
+       if (range) {
+           headers['Range'] = range;
+       }
+       
+       fetch(streamUrl, { headers }).then(fetchRes => {
+           if (!fetchRes.ok && fetchRes.status !== 206) {
+               throw new Error("Failed to fetch stream");
+           }
+           
+           if (fetchRes.status === 206 || fetchRes.status === 200) {
+               res.status(fetchRes.status);
+               ['content-type', 'content-length', 'content-range', 'accept-ranges'].forEach(header => {
+                   if (fetchRes.headers.has(header)) {
+                       res.setHeader(header, fetchRes.headers.get(header)!);
+                   }
+               });
+               res.setHeader('Cache-Control', 'no-cache');
+               if (!fetchRes.headers.has('content-type')) {
+                   res.setHeader('Content-Type', 'video/mp4');
+               }
+           } else {
+               res.setHeader('Content-Type', 'video/mp4');
+               res.setHeader('Accept-Ranges', 'bytes');
+               res.setHeader('Cache-Control', 'no-cache');
+           }
+           
+           if (fetchRes.body) {
+               const { Readable } = require('stream');
+               Readable.fromWeb(fetchRes.body as any).pipe(res);
+           } else {
+               res.end();
+           }
+       }).catch(err => {
+           console.error("Stream fetch error:", err);
+           if (!res.headersSent) {
+               res.status(500).json({ success: false, error: "تعذر بث الفيديو" });
+           }
+       });
+    });
+  };
+  
+  streamVideo(targetFormat);
+});
+
+// 4. نقطة النهاية لرفع ملف الكوكيز لليوتيوب
 app.post("/api/upload-cookies", upload.single("cookiesFile"), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ success: false, error: "لم يتم إرسال أي ملف." });
