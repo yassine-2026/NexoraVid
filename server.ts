@@ -5,7 +5,7 @@ import fs from "fs";
 import https from "https";
 import http from "http";
 import crypto from "crypto";
-import { execFile } from "child_process";
+import { execFile, spawn } from "child_process";
 import { createServer as createViteServer } from "vite";
 import multer from "multer";
 
@@ -160,7 +160,7 @@ app.post("/api/analyze", async (req, res, next) => {
     console.log(`Analyzing URL: ${url}`);
     
     // دالة لحفظ النتيجة في الذاكرة المؤقتة
-    const saveAndRespond = (info: any, fullFormats: any[]) => {
+    const saveAndRespond = (info: any, fullFormats: any[], cookiePath: string | null = null) => {
       // إرسال معلومات الصيغ للواجهة بدون الرابط المباشر
       const safeFormats = fullFormats.map((f: any) => ({
           format_id: f.format_id,
@@ -180,7 +180,8 @@ app.post("/api/analyze", async (req, res, next) => {
       cache.set(taskId, {
         timestamp: Date.now(),
         info: cachedInfo,
-        originalUrl: url
+        originalUrl: url,
+        cookiePath: cookiePath
       });
 
       // إعادة البيانات للواجهة بنفس التنسيق الحالي
@@ -224,9 +225,15 @@ app.post("/api/analyze", async (req, res, next) => {
     const processYtDlpOutput = (stdout: string) => {
         if (!stdout || !stdout.trim()) throw new Error("Empty stdout");
         const data = JSON.parse(stdout);
+        
+        // سبب تجاهل الصيغ التي لا تحتوي على رابط مباشر: لضمان تقديم خيارات للمستخدم قابلة للتحميل فعلياً
         const fullFormats = data.formats
-          .filter((f: any) => f.url && f.ext !== 'mhtml' && (f.vcodec !== 'none' || f.acodec !== 'none'))
+          .filter((f: any) => f.url && f.url.trim() !== '' && f.url.startsWith('http') && f.ext !== 'mhtml' && (f.vcodec !== 'none' || f.acodec !== 'none'))
           .reverse();
+
+        if (fullFormats.length === 0) {
+            throw new Error("NO_VALID_FORMATS");
+        }
 
         const info = {
           title: data.title,
@@ -278,14 +285,33 @@ app.post("/api/analyze", async (req, res, next) => {
             // تنظيف الرابط من معلمات التتبع إن وجدت
             const cleanUrl = url.split('&')[0];
             
-            const stdout = await runYtDlp(cleanUrl, extraArgs);
+            let stdout;
+            try {
+                stdout = await runYtDlp(cleanUrl, extraArgs);
+            } catch (err: any) {
+                if (err.stderr && err.stderr.includes('Requested format is not available')) {
+                    console.log("Retrying YouTube extraction without player_client=ios fallback...");
+                    const fallbackArgs = [
+                       "--cookies", selectedCookiePath,
+                       "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                       "--js-runtimes", `node:${process.execPath}`
+                    ];
+                    stdout = await runYtDlp(cleanUrl, fallbackArgs);
+                } else {
+                    throw err;
+                }
+            }
+            
             const { info, fullFormats } = processYtDlpOutput(stdout);
             
             // تخزين النتائج في الذاكرة (Cache) وأعد البيانات
-            return saveAndRespond(info, fullFormats);
+            return saveAndRespond(info, fullFormats, selectedCookiePath);
             
         } catch (e: any) {
             console.error("YouTube Error:", e);
+            if (e.message === "NO_VALID_FORMATS") {
+                return res.status(400).json({ success: false, error: "لا توجد صيغ قابلة للتحميل لهذا الفيديو." });
+            }
             let errorMessage = "تعذر استخراج البيانات من اليوتيوب. تأكد من صلاحية الكوكيز أو أن الفيديو غير محذوف.";
             if (e.stderr) {
                 const match = e.stderr.match(/ERROR: (.*)/);
@@ -304,6 +330,9 @@ app.post("/api/analyze", async (req, res, next) => {
          const { info, fullFormats } = processYtDlpOutput(stdout);
          return saveAndRespond(info, fullFormats);
        } catch (e: any) {
+         if (e.message === "NO_VALID_FORMATS") {
+             return res.status(400).json({ success: false, error: "لا توجد صيغ قابلة للتحميل لهذا الفيديو." });
+         }
          // التحقق مما إذا كان الخطأ يتطلب ملف كوكيز
          const stderrLower = (e.stderr || "").toLowerCase();
          const needsCookies = stderrLower.includes('login') || 
@@ -351,8 +380,11 @@ app.post("/api/analyze", async (req, res, next) => {
                      ];
                      const stdoutRetry = await runYtDlp(url, retryArgs);
                      const { info, fullFormats } = processYtDlpOutput(stdoutRetry);
-                     return saveAndRespond(info, fullFormats);
+                     return saveAndRespond(info, fullFormats, selectedCookiePath);
                  } catch (retryError: any) {
+                     if (retryError.message === "NO_VALID_FORMATS") {
+                         return res.status(400).json({ success: false, error: "لا توجد صيغ قابلة للتحميل لهذا الفيديو." });
+                     }
                      let errorMessage = `تعذر استخراج البيانات من ${platform} حتى مع استخدام ملف الكوكيز.`;
                      if (retryError.stderr) {
                          const match = retryError.stderr.match(/ERROR: (.*)/);
@@ -385,75 +417,134 @@ app.post("/api/analyze", async (req, res, next) => {
 });
 
 // 2. نقطة النهاية لتحميل الفيديو كوكيل (Proxy Download)
-app.get("/api/download", (req, res) => {
-  const { taskId, formatId } = req.query;
-  
-  if (!taskId || !formatId) {
-    return res.status(400).send("معلمات غير صالحة");
-  }
+app.get("/api/download", async (req, res, next) => {
+  try {
+    const { taskId, formatId } = req.query;
+    
+    if (!taskId || !formatId) {
+      return res.status(400).json({ success: false, error: "معلمات غير صالحة" });
+    }
 
-  const cachedData = cache.get(taskId as string);
-  if (!cachedData) {
-    return res.status(404).send("انتهت صلاحية الجلسة. يرجى تحليل الرابط مرة أخرى.");
-  }
+    const cachedData = cache.get(taskId as string);
+    if (!cachedData) {
+      return res.status(404).json({ success: false, error: "انتهت صلاحية الجلسة. يرجى تحليل الرابط مرة أخرى." });
+    }
 
-  const format = cachedData.info.formats.find((f: any) => f.format_id === formatId);
-  if (!format || !format.url) {
-    return res.status(404).send("الصيغة المطلوبة غير موجودة");
-  }
+    // استخراج البيانات من الكاش
+    const originalUrl = cachedData.originalUrl;
+    const cookiePath = cachedData.cookiePath;
+    
+    // تنظيف اسم الملف من الرموز الخاصة لتجنب الأخطاء
+    const cleanTitle = cachedData.info.title.replace(/[^\w\s\u0600-\u06FF-]/gi, '').trim().replace(/\s+/g, '_');
+    const format = cachedData.info.formats.find((f: any) => f.format_id === formatId);
+    let fileName = `${cleanTitle}.${format?.ext || 'mp4'}`;
 
-  const directUrl = format.url;
-  // تنظيف اسم الملف من الرموز الخاصة لتجنب الأخطاء
-  const cleanTitle = cachedData.info.title.replace(/[^\w\s\u0600-\u06FF-]/gi, '').trim().replace(/\s+/g, '_');
-  const fileName = `${cleanTitle}.${format.ext}`;
+    // دالة بث الفيديو مباشرة
+    const streamVideo = (requestedFormatId: string, isFallback: boolean = false, retryCount: number = 0) => {
+        // لماذا تم الاستغناء عن الروابط المباشرة المخزنة:
+        // لأن الروابط قد تنتهي صلاحيتها أو تصبح غير صالحة، مما يسبب خطأ Requested format is not available
+        // بينما استخدام yt-dlp في وقت الطلب يضمن استخراج رابط حي.
+        
+        // لماذا تم استخدام spawn بدلاً من exec:
+        // لتمكين بث الفيديو (Streaming) مباشرة للمستخدم دون تحميله وتخزينه في ذاكرة الخادم أولاً.
+        const args = [
+            "--no-playlist",
+            "--no-check-certificate",
+            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "-f", requestedFormatId,
+            "-o", "-" // توجيه الخرج إلى stdout
+        ];
 
-  console.log(`Starting proxy download for: ${fileName}`);
-
-  // تعيين رؤوس الإجبار على التحميل (Content-Disposition: attachment)
-  res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(fileName)}"`);
-  res.setHeader("Content-Type", "application/octet-stream");
-
-  // دالة لجلب الفيديو من الرابط المباشر وإعادة توجيهه للمستخدم
-  const streamFromUrl = (url: string) => {
-    const client = url.startsWith("https") ? https : http;
-    client.get(url, (response) => {
-      // التعامل مع إعادة التوجيه
-      if (response.statusCode === 302 || response.statusCode === 301 || response.statusCode === 303 || response.statusCode === 307) {
-        if (response.headers.location) {
-          streamFromUrl(response.headers.location);
-          return;
+        if (cookiePath && fs.existsSync(cookiePath)) {
+            args.push("--cookies", cookiePath);
         }
-      }
-      
-      if (response.statusCode && response.statusCode >= 400) {
-        console.error(`Error downloading from direct URL: ${response.statusCode}`);
+
+        args.push(originalUrl);
+
+        let hasData = false;
+        const ytDlpProcess = spawn(YTDLP_PATH, args);
+
+        // إعداد رؤوس الاستجابة إذا لم يتم إرسالها بعد
         if (!res.headersSent) {
-           res.status(500).send("فشل التحميل من المصدر. الرابط المباشر غير متاح حالياً.");
+            res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(fileName)}"`);
+            res.setHeader("Content-Type", format?.ext === 'mp3' || format?.ext === 'm4a' ? "audio/mpeg" : (format?.ext === 'webm' ? "video/webm" : "video/mp4"));
+            if (isFallback) {
+                res.setHeader("X-Format-Fallback", "true");
+            }
         }
-        return;
-      }
 
-      if (response.headers["content-length"]) {
-        res.setHeader("Content-Length", response.headers["content-length"]);
-      }
-      if (response.headers["content-type"]) {
-        res.setHeader("Content-Type", response.headers["content-type"]);
-      }
+        ytDlpProcess.stdout.on('data', () => {
+            hasData = true;
+        });
 
-      // توجيه المحتوى (Stream)
-      response.pipe(res);
-      
-      response.on('error', (err) => {
-        console.error("Stream response error:", err);
-        if (!res.headersSent) res.status(500).end();
-      });
-    }).on("error", (err) => {
-      console.error("Stream get error:", err);
-      if (!res.headersSent) res.status(500).end();
-    });
-  };
+        // كيفية بث الفيديو مباشرة إلى المستخدم: عن طريق توجيه stdout الخاص بـ child_process إلى كائن الاستجابة (res)
+        ytDlpProcess.stdout.pipe(res);
+        
+        let stderrData = '';
+        ytDlpProcess.stderr.on('data', (data) => {
+            stderrData += data.toString();
+        });
 
-  streamFromUrl(directUrl);
+        ytDlpProcess.on('close', (code) => {
+            if (code !== 0 && !res.writableEnded) {
+                console.error(`yt-dlp closed with code ${code}. Stderr: ${stderrData}`);
+                
+                if (!hasData) {
+                    // كيفية إعادة المحاولة تلقائياً: إذا لم نستلم بيانات، نعيد نفس الصيغة مرة واحدة
+                    if (retryCount === 0 && !isFallback) {
+                        console.log("Retrying current format once...");
+                        streamVideo(requestedFormatId, false, 1);
+                    } 
+                    // كيفية عمل الخطة الاحتياطية باستخدام "-f best":
+                    // سبب أن هذه الطريقة تمنع انتهاء صلاحية الروابط وتحل مشكلة Requested format is not available:
+                    // لأننا نتخلى عن الصيغة المطلوبة التي قد لا تكون متاحة ونطلب من yt-dlp جلب أفضل جودة متوفرة الآن
+                    else if (!isFallback) {
+                        console.log("Retrying with fallback format (-f best)...");
+                        streamVideo("best", true, 0);
+                    } else if (!res.headersSent) {
+                        res.status(500).json({ success: false, error: "تعذر تحميل الفيديو من المصدر. يرجى المحاولة لاحقاً." });
+                    } else {
+                        res.end();
+                    }
+                }
+            } else if (!hasData && !res.writableEnded) {
+                if (!isFallback) {
+                     console.log("No data received. Retrying with fallback format (-f best)...");
+                     streamVideo("best", true, 0);
+                 } else if (!res.headersSent) {
+                     res.status(500).json({ success: false, error: "فشل بث الفيديو بعد كل المحاولات." });
+                 } else {
+                     res.end();
+                 }
+            }
+        });
+        
+        ytDlpProcess.on('error', (err) => {
+            console.error("Spawn error:", err);
+            if (!hasData && !isFallback && !res.writableEnded) {
+                streamVideo("best", true, 0);
+            } else if (!res.headersSent) {
+                res.status(500).json({ success: false, error: "حدث خطأ أثناء تشغيل أداة التحميل." });
+            } else {
+                res.end();
+            }
+        });
+        
+        req.on('close', () => {
+            if (!ytDlpProcess.killed) {
+                ytDlpProcess.kill();
+            }
+        });
+    };
+
+    streamVideo(formatId as string);
+
+  } catch (err) {
+    console.error("Download endpoint error:", err);
+    if (!res.headersSent) {
+       res.status(500).json({ success: false, error: "حدث خطأ غير متوقع أثناء عملية التحميل." });
+    }
+  }
 });
 
 // 3. نقطة النهاية لرفع ملف الكوكيز لليوتيوب
