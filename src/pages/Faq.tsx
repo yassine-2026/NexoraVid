@@ -1,5 +1,5 @@
 import React from 'react';
-import { Helmet } from 'react-helmet-async';
+import SEO from '../components/SEO';
 
 export default function Faq() {
   const faqs = [
@@ -27,10 +27,11 @@ export default function Faq() {
 
   return (
     <div className="w-full max-w-4xl mx-auto px-6 py-12">
-      <Helmet>
-        <title>Frequently Asked Questions (FAQ) - NexoraVid</title>
-        <meta name="description" content="Find answers to common questions about NexoraVid." />
-      </Helmet>
+      <SEO 
+        title="Frequently Asked Questions (FAQ) - NexoraVid" 
+        description="Find answers to common questions about NexoraVid." 
+        path="/faq"
+      />
       <h1 className="text-3xl font-bold mb-8 text-center">Frequently Asked Questions</h1>
       
       <div className="space-y-6">

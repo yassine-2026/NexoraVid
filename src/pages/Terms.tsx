@@ -1,13 +1,14 @@
 import React from 'react';
-import { Helmet } from 'react-helmet-async';
+import SEO from '../components/SEO';
 
 export default function Terms() {
   return (
     <div className="w-full max-w-4xl mx-auto px-6 py-12">
-      <Helmet>
-        <title>Terms of Service - NexoraVid</title>
-        <meta name="description" content="Terms of Service for using NexoraVid." />
-      </Helmet>
+      <SEO 
+        title="Terms of Service - NexoraVid" 
+        description="Terms of Service for using NexoraVid." 
+        path="/terms"
+      />
       <h1 className="text-3xl font-bold mb-6">Terms of Service</h1>
       <div className="prose prose-invert max-w-none text-slate-300">
         <p className="mb-4">Last updated: June 29, 2026</p>

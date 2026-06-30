@@ -70,7 +70,7 @@ export default function ResultCard({ videoInfo, translations: t, onDownload, onC
                 className="w-full h-full transform-style-3d transition-all duration-500"
                 onClick={() => { playSound('click'); setShowPreview(true); }}
               >
-                <img src={videoInfo.thumbnail} alt={videoInfo.title} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                <img src={videoInfo.thumbnail} alt={videoInfo.title} loading="lazy" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                 <div className="absolute inset-0 bg-black/40 group-hover/thumb:bg-black/20 transition-colors flex items-center justify-center">
                   <div className="w-16 h-16 bg-white/20 backdrop-blur-md rounded-full flex items-center justify-center text-white shadow-lg border border-white/30 transform group-hover/thumb:scale-110 transition-transform">
                     <Play className="w-8 h-8 ml-1" />

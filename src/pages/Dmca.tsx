@@ -1,13 +1,14 @@
 import React from 'react';
-import { Helmet } from 'react-helmet-async';
+import SEO from '../components/SEO';
 
 export default function Dmca() {
   return (
     <div className="w-full max-w-4xl mx-auto px-6 py-12">
-      <Helmet>
-        <title>DMCA - NexoraVid</title>
-        <meta name="description" content="Digital Millennium Copyright Act (DMCA) Notice." />
-      </Helmet>
+      <SEO 
+        title="DMCA - NexoraVid" 
+        description="Digital Millennium Copyright Act (DMCA) Notice." 
+        path="/dmca"
+      />
       <h1 className="text-3xl font-bold mb-6">DMCA Notice</h1>
       <div className="prose prose-invert max-w-none text-slate-300">
         <p className="mb-4">Last updated: June 29, 2026</p>

@@ -1,13 +1,14 @@
 import React from 'react';
-import { Helmet } from 'react-helmet-async';
+import SEO from '../components/SEO';
 
 export default function About() {
   return (
     <div className="w-full max-w-4xl mx-auto px-6 py-12">
-      <Helmet>
-        <title>About Us - NexoraVid</title>
-        <meta name="description" content="Learn more about NexoraVid, the ultimate universal video downloader." />
-      </Helmet>
+      <SEO 
+        title="About Us - NexoraVid" 
+        description="Learn more about NexoraVid, the ultimate universal video downloader." 
+        path="/about"
+      />
       <h1 className="text-3xl font-bold mb-6">About NexoraVid</h1>
       <div className="prose prose-invert max-w-none text-slate-300">
         <p className="mb-4">

@@ -1,13 +1,14 @@
 import React from 'react';
-import { Helmet } from 'react-helmet-async';
+import SEO from '../components/SEO';
 
 export default function Privacy() {
   return (
     <div className="w-full max-w-4xl mx-auto px-6 py-12">
-      <Helmet>
-        <title>Privacy Policy - NexoraVid</title>
-        <meta name="description" content="Privacy Policy for NexoraVid. Learn how we handle your data." />
-      </Helmet>
+      <SEO 
+        title="Privacy Policy - NexoraVid" 
+        description="Privacy Policy for NexoraVid. Learn how we handle your data." 
+        path="/privacy-policy"
+      />
       <h1 className="text-3xl font-bold mb-6">Privacy Policy</h1>
       <div className="prose prose-invert max-w-none text-slate-300">
         <p className="mb-4">Last updated: June 29, 2026</p>

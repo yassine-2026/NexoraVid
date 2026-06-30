@@ -45,14 +45,14 @@ export default function SplashScreen({ onComplete }: { onComplete: () => void })
              animate={{ scale: 1, opacity: 1 }}
              className="text-center"
           >
-            <h1 className="text-6xl md:text-8xl font-display font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-indigo-400 to-purple-400 tracking-tight">
+            <div className="text-6xl md:text-8xl font-display font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-indigo-400 to-purple-400 tracking-tight">
               {text}
               <motion.span
                 animate={{ opacity: [0, 1, 0] }}
                 transition={{ repeat: Infinity, duration: 0.8 }}
                 className="inline-block w-[0.1em] h-[1em] bg-blue-400 ml-1 align-middle"
               />
-            </h1>
+            </div>
             <motion.p
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}

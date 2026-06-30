@@ -1,5 +1,5 @@
 import React from 'react';
-import { Helmet } from 'react-helmet-async';
+import SEO from '../components/SEO';
 import { useParams, Link } from 'react-router-dom';
 
 const articlesData: Record<string, any> = {
@@ -62,10 +62,12 @@ export default function BlogPost() {
 
   return (
     <div className="w-full max-w-3xl mx-auto px-6 py-12">
-      <Helmet>
-        <title>{article.title} - NexoraVid Blog</title>
-        <meta name="description" content={article.title} />
-      </Helmet>
+      <SEO 
+        title={`${article.title} - NexoraVid Blog`}
+        description={article.title}
+        path={`/blog/${slug}`}
+        type="article"
+      />
       
       <Link to="/blog" className="text-sm text-blue-400 hover:underline mb-8 inline-block">&larr; Back to Blog</Link>
       

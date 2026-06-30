@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { Routes, Route, Link, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { Helmet } from 'react-helmet-async';
 import { Download, Link as LinkIcon, Loader2, AlertCircle, CheckCircle2, Globe, FileVideo, Music, Clock, User, HardDrive, Play, Copy, Check, Menu, X, Sun, Moon, History } from 'lucide-react';
 import SplashScreen from './components/SplashScreen';
 import Background from './components/Background';
 import ResultCard from './components/ResultCard';
+import SEO from './components/SEO';
 import { playSound } from './utils/sounds';
 
 const About = lazy(() => import('./pages/About'));
@@ -386,23 +386,12 @@ export default function App() {
         <Routes>
           <Route path="/" element={
             <>
-              <Helmet>
-                <title>{t.title} - Video Downloader</title>
-                <meta name="description" content={t.subtitle} />
-                <link rel="canonical" href="https://nexoravid.onrender.com/" />
-                <script type="application/ld+json">
-                  {`
-                    {
-                      "@context": "https://schema.org",
-                      "@type": "WebApplication",
-                      "name": "NexoraVid",
-                      "description": "${t.subtitle}",
-                      "applicationCategory": "MultimediaApplication",
-                      "operatingSystem": "All"
-                    }
-                  `}
-                </script>
-              </Helmet>
+              <SEO 
+                title={`${t.title} - Video Downloader`} 
+                description={t.subtitle} 
+                path="/" 
+                type="WebApplication" 
+              />
               <div className="w-full max-w-4xl mx-auto px-6 py-12 flex flex-col items-center">
                 
                 {/* Hero Section */}

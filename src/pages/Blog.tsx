@@ -1,5 +1,5 @@
 import React from 'react';
-import { Helmet } from 'react-helmet-async';
+import SEO from '../components/SEO';
 import { Link } from 'react-router-dom';
 
 const articles = [
@@ -26,10 +26,11 @@ const articles = [
 export default function Blog() {
   return (
     <div className="w-full max-w-4xl mx-auto px-6 py-12">
-      <Helmet>
-        <title>Blog - NexoraVid</title>
-        <meta name="description" content="Read articles about video downloading, formats, and fair use on the NexoraVid blog." />
-      </Helmet>
+      <SEO 
+        title="Blog - NexoraVid" 
+        description="Read articles about video downloading, formats, and fair use on the NexoraVid blog." 
+        path="/blog"
+      />
       <h1 className="text-3xl font-bold mb-8 text-center">Blog</h1>
       
       <div className="grid gap-6 md:grid-cols-2">

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Helmet } from 'react-helmet-async';
+import SEO from '../components/SEO';
 import { CheckCircle2, Loader2 } from 'lucide-react';
 
 export default function Contact() {
@@ -39,10 +39,11 @@ export default function Contact() {
 
   return (
     <div className="w-full max-w-2xl mx-auto px-6 py-12">
-      <Helmet>
-        <title>Contact Us - NexoraVid</title>
-        <meta name="description" content="Get in touch with the NexoraVid team for support, business inquiries, or feedback." />
-      </Helmet>
+      <SEO 
+        title="Contact Us - NexoraVid" 
+        description="Get in touch with the NexoraVid team for support, business inquiries, or feedback." 
+        path="/contact"
+      />
       <h1 className="text-3xl font-bold mb-6">Contact Us</h1>
       
       {submitted ? (
