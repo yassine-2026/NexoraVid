@@ -2,7 +2,11 @@ import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { Routes, Route, Link, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { Helmet } from 'react-helmet-async';
-import { Download, Link as LinkIcon, Loader2, AlertCircle, CheckCircle2, Globe, FileVideo, Music, Clock, User, HardDrive, Play, Copy, Check, Menu, X } from 'lucide-react';
+import { Download, Link as LinkIcon, Loader2, AlertCircle, CheckCircle2, Globe, FileVideo, Music, Clock, User, HardDrive, Play, Copy, Check, Menu, X, Sun, Moon, History } from 'lucide-react';
+import SplashScreen from './components/SplashScreen';
+import Background from './components/Background';
+import ResultCard from './components/ResultCard';
+import { playSound } from './utils/sounds';
 
 const About = lazy(() => import('./pages/About'));
 const Contact = lazy(() => import('./pages/Contact'));
@@ -94,12 +98,34 @@ export default function App() {
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  
+  // Single result
   const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null);
   const [taskId, setTaskId] = useState<string | null>(null);
+
+  // Batch results
+  const [batchResults, setBatchResults] = useState<{info: VideoInfo, taskId: string}[] | null>(null);
   
+  // New features
+  const [splashComplete, setSplashComplete] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem('theme') !== 'light');
+  const [history, setHistory] = useState<any[]>(() => {
+    try { return JSON.parse(localStorage.getItem('dlHistory') || '[]'); } catch { return []; }
+  });
+
   // Download state
   const [downloadingFormatId, setDownloadingFormatId] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<{ loaded: number; total: number; percentage: number } | null>(null);
+  const [isGifDownload, setIsGifDownload] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
+    if (isDarkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [isDarkMode]);
 
   // Preview state
   const [previewState, setPreviewState] = useState<'idle' | 'playing'>('idle');
@@ -117,34 +143,75 @@ export default function App() {
     document.documentElement.lang = currentLang.code;
   }, [langCode, currentLang]);
 
-  const handleProcessUrl = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleProcessUrl = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    playSound('click');
     setError(null);
     setVideoInfo(null);
     setTaskId(null);
-    setPreviewState('idle');
-    setPreviewFormatId(null);
+    setBatchResults(null);
 
-    const trimmedUrl = url.trim();
-    if (!trimmedUrl || !trimmedUrl.startsWith('http')) {
+    const urlsList = url.split('\n').map(u => u.trim()).filter(u => u && u.startsWith('http'));
+    
+    if (urlsList.length === 0) {
       setError(t.invalidUrl);
       return;
     }
 
     setLoading(true);
     try {
-      const response = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: trimmedUrl })
-      });
-
-      const data = await response.json();
-      if (!response.ok || !data.success) {
-        setError(data.error || t.networkError);
+      if (urlsList.length > 1) {
+        // Batch processing (limit 5)
+        const batchUrls = urlsList.slice(0, 5);
+        const response = await fetch('/api/batch-analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ urls: batchUrls })
+        });
+        const data = await response.json();
+        if (!response.ok || !data.success) throw new Error();
+        
+        const validResults = data.results
+           .filter((r: any) => r.status === 'fulfilled' && r.value.success)
+           .map((r: any) => ({ info: r.value.info, taskId: r.value.taskId }));
+        
+        if (validResults.length > 0) {
+           playSound('success');
+           setBatchResults(validResults);
+        } else {
+           setError('Failed to analyze batch links.');
+        }
       } else {
-        setVideoInfo(data.info);
-        setTaskId(data.taskId);
+        // Single processing
+        const trimmedUrl = urlsList[0];
+        const response = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: trimmedUrl })
+        });
+
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+          setError(data.error || t.networkError);
+        } else {
+          playSound('success');
+          setVideoInfo(data.info);
+          setTaskId(data.taskId);
+          
+          // Add to history
+          const newEntry = { url: trimmedUrl, title: data.info.title, extractor: data.info.extractor, date: new Date().toISOString() };
+          const newHistory = [newEntry, ...history.filter(h => h.url !== trimmedUrl)].slice(0, 10);
+          setHistory(newHistory);
+          localStorage.setItem('dlHistory', JSON.stringify(newHistory));
+          
+          // Mobile Quality Suggestion
+          if (window.innerWidth <= 768) {
+            const has4k = data.info.formats.some((f: any) => parseInt(f.height) >= 2160);
+            if (has4k) {
+               // Just an alert or auto select could be done, we'll let user know via small UI later if we want.
+            }
+          }
+        }
       }
     } catch (err: any) {
       setError(t.networkError);
@@ -153,15 +220,28 @@ export default function App() {
     }
   };
 
-  const handleDownload = async (format: VideoFormat) => {
-    if (!taskId || downloadingFormatId) return;
+  const handleDownload = async (formatId: string, isAudio: boolean, specificTaskId?: string) => {
+    const tid = specificTaskId || taskId;
+    if (!tid || downloadingFormatId) return;
     
-    setDownloadingFormatId(format.format_id);
-    setDownloadProgress({ loaded: 0, total: format.filesize || 0, percentage: 0 });
+    setDownloadingFormatId(formatId);
+    setIsGifDownload(false);
+    
+    // Find format filesize
+    let targetFormat;
+    if (videoInfo) targetFormat = videoInfo.formats.find(f => f.format_id === formatId);
+    else if (batchResults) {
+      for (const res of batchResults) {
+        const f = res.info.formats.find(f => f.format_id === formatId);
+        if (f) targetFormat = f;
+      }
+    }
+
+    setDownloadProgress({ loaded: 0, total: targetFormat?.filesize || 0, percentage: 0 });
     setError(null);
     
     try {
-      const downloadUrl = `/api/download?taskId=${taskId}&formatId=${format.format_id}`;
+      const downloadUrl = `/api/download?taskId=${tid}&formatId=${formatId}`;
       const response = await fetch(downloadUrl);
       
       if (!response.ok || !response.body) {
@@ -169,7 +249,7 @@ export default function App() {
       }
 
       const contentLength = response.headers.get('content-length');
-      const total = contentLength ? parseInt(contentLength, 10) : (format.filesize || 0);
+      const total = contentLength ? parseInt(contentLength, 10) : (targetFormat?.filesize || 0);
       let loaded = 0;
 
       const reader = response.body.getReader();
@@ -195,7 +275,7 @@ export default function App() {
       
       // Cleanup video title for filename
       const cleanTitle = videoInfo?.title.replace(/[^\w\s\u0600-\u06FF-]/gi, '').trim().replace(/\s+/g, '_') || 'video';
-      const filename = `${cleanTitle}.${format.ext}`;
+      const filename = `${cleanTitle}.${targetFormat?.ext || (isAudio ? 'mp3' : 'mp4')}`;
 
       // Create hidden link and click
       const a = document.createElement('a');
@@ -204,6 +284,7 @@ export default function App() {
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
+      playSound('complete');
       
       // Free memory
       setTimeout(() => URL.revokeObjectURL(finalUrl), 10000);
@@ -214,7 +295,14 @@ export default function App() {
     } finally {
       setDownloadingFormatId(null);
       setDownloadProgress(null);
+      setIsGifDownload(false);
     }
+  };
+
+  const handleConvertGif = (formatId: string, specificTaskId?: string) => {
+    const tid = specificTaskId || taskId;
+    if (!tid) return;
+    window.open(`/api/convert-gif?taskId=${tid}&formatId=${formatId}`, '_blank');
   };
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -225,27 +313,29 @@ export default function App() {
   }, [location]);
 
   return (
-    <div className={`min-h-screen flex flex-col font-inter bg-slate-950 text-slate-50 overflow-x-hidden relative selection:bg-blue-500/30`}>
-      {/* Background Gradients (Glassmorphism) */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none z-0">
-        <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] rounded-full bg-blue-600/10 blur-[120px]"></div>
-        <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] rounded-full bg-purple-600/10 blur-[120px]"></div>
-      </div>
-
-      {/* Header */}
-      <header className="relative z-10 w-full max-w-6xl mx-auto p-4 md:p-6 flex justify-between items-center">
-        <Link to="/" className="font-bold text-xl md:text-2xl tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-400 hover:opacity-80 transition-opacity">
-          NexoraVid
-        </Link>
-        
-        <div className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-300">
-          <Link to="/" className="hover:text-blue-400 transition-colors">Home</Link>
-          <Link to="/blog" className="hover:text-blue-400 transition-colors">Blog</Link>
-          <Link to="/faq" className="hover:text-blue-400 transition-colors">FAQ</Link>
+    <>
+      {!splashComplete && <SplashScreen onComplete={() => setSplashComplete(true)} />}
+      <Background isDarkMode={isDarkMode} />
+      
+      <div className={`min-h-screen flex flex-col font-inter bg-slate-50/50 dark:bg-slate-950 text-slate-900 dark:text-slate-50 overflow-x-hidden relative selection:bg-blue-500/30 transition-colors duration-700`}>
+        {/* Header */}
+        <header className="relative z-10 w-full max-w-6xl mx-auto p-4 md:p-6 flex justify-between items-center bg-white/20 dark:bg-slate-900/30 backdrop-blur-md rounded-b-3xl border-b border-white/20 dark:border-white/10 shadow-sm">
+          <Link to="/" className="font-bold text-2xl md:text-3xl font-display tracking-tighter bg-clip-text text-transparent bg-gradient-to-r from-blue-500 to-purple-500 hover:opacity-80 transition-opacity">
+            NexoraVid
+          </Link>
           
-          <div className="relative group ml-4">
-            <button className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition-colors text-sm font-medium backdrop-blur-md">
-              <Globe className="w-4 h-4 text-blue-400" />
+          <div className="hidden md:flex items-center gap-6 text-sm font-medium">
+            <Link to="/" className="hover:text-blue-500 dark:hover:text-blue-400 transition-colors">Home</Link>
+            <Link to="/blog" className="hover:text-blue-500 dark:hover:text-blue-400 transition-colors">Blog</Link>
+            <Link to="/faq" className="hover:text-blue-500 dark:hover:text-blue-400 transition-colors">FAQ</Link>
+            
+            <button onClick={() => { playSound('click'); setIsDarkMode(!isDarkMode); }} className="p-2 rounded-full bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 transition-colors backdrop-blur-md">
+              {isDarkMode ? <Sun className="w-5 h-5 text-amber-400" /> : <Moon className="w-5 h-5 text-indigo-600" />}
+            </button>
+            
+            <div className="relative group ml-2">
+              <button className="flex items-center gap-2 px-4 py-2 rounded-xl bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 hover:bg-black/10 dark:hover:bg-white/10 transition-colors text-sm font-medium backdrop-blur-md">
+                <Globe className="w-4 h-4 text-blue-500 dark:text-blue-400" />
               {currentLang.name}
             </button>
             <div className="absolute top-full right-0 mt-2 w-48 bg-slate-900/90 backdrop-blur-xl border border-white/10 rounded-xl p-2 hidden group-hover:block z-50 shadow-2xl max-h-64 overflow-y-auto custom-scrollbar">
@@ -299,7 +389,7 @@ export default function App() {
               <Helmet>
                 <title>{t.title} - Video Downloader</title>
                 <meta name="description" content={t.subtitle} />
-                <link rel="canonical" href="https://nexoravid.com/" />
+                <link rel="canonical" href="https://nexoravid.onrender.com/" />
                 <script type="application/ld+json">
                   {`
                     {
@@ -337,36 +427,42 @@ export default function App() {
                 animate={{ opacity: 1, scale: 1 }}
                 transition={{ delay: 0.1 }}
                 onSubmit={handleProcessUrl}
-                className="w-full max-w-2xl relative mb-8 group"
+                className="w-full max-w-3xl relative mb-8 group"
               >
-                <div className="relative flex items-center bg-white/5 border border-white/10 hover:border-white/20 focus-within:border-blue-500/50 focus-within:bg-white/10 rounded-2xl transition-all duration-300 backdrop-blur-md shadow-2xl overflow-hidden">
-                  <div className={`absolute ${currentLang.dir === 'rtl' ? 'right-5' : 'left-5'} text-slate-400 pointer-events-none`}>
-                    <LinkIcon className="w-6 h-6 group-focus-within:text-blue-400 transition-colors" />
+                <div className="relative flex flex-col items-center bg-white/10 dark:bg-black/20 border border-white/20 dark:border-white/10 hover:border-blue-500/50 focus-within:border-blue-500 focus-within:bg-white/20 dark:focus-within:bg-white/5 rounded-3xl transition-all duration-300 backdrop-blur-xl shadow-[0_0_50px_-15px_rgba(59,130,246,0.2)] overflow-hidden">
+                  <div className={`absolute top-6 ${currentLang.dir === 'rtl' ? 'right-6' : 'left-6'} text-blue-400 pointer-events-none animate-pulse`}>
+                    <LinkIcon className="w-8 h-8 group-focus-within:text-purple-400 transition-colors" />
                   </div>
-                  <input
-                    type="text"
+                  <textarea
                     value={url}
                     onChange={(e) => setUrl(e.target.value)}
-                    placeholder={t.placeholder}
-                    className={`w-full bg-transparent py-5 ${currentLang.dir === 'rtl' ? 'pr-14 pl-40' : 'pl-14 pr-40'} text-lg outline-none text-white placeholder-slate-500`}
+                    placeholder={currentLang.code === 'ar' ? "الصق روابط الفيديو هنا (حتى 5 روابط مفصولة بأسطر)" : "Paste video links here (up to 5, one per line)"}
+                    className={`w-full bg-transparent pt-7 pb-20 ${currentLang.dir === 'rtl' ? 'pr-20 pl-6' : 'pl-20 pr-6'} text-xl outline-none text-slate-800 dark:text-white placeholder-slate-500 dark:placeholder-slate-400 resize-none min-h-[140px]`}
                     disabled={loading}
                     dir="ltr"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleProcessUrl();
+                      }
+                    }}
                   />
-                  <div className={`absolute ${currentLang.dir === 'rtl' ? 'left-2' : 'right-2'}`}>
+                  <div className={`absolute bottom-4 ${currentLang.dir === 'rtl' ? 'left-4' : 'right-4'}`}>
                     <button
-                      type="submit"
+                      type="button"
+                      onClick={() => handleProcessUrl()}
                       disabled={loading || !url.trim()}
-                      className="bg-blue-600 hover:bg-blue-500 disabled:bg-white/10 disabled:text-slate-500 text-white font-medium py-3 px-6 rounded-xl transition-all flex items-center gap-2 shadow-lg"
+                      className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:from-slate-600 disabled:to-slate-700 disabled:text-slate-400 text-white font-bold py-4 px-8 rounded-2xl transition-all flex items-center gap-3 shadow-[0_0_20px_rgba(79,70,229,0.4)] hover:shadow-[0_0_30px_rgba(79,70,229,0.6)] group/btn"
                     >
                       {loading ? (
                         <>
-                          <Loader2 className="w-5 h-5 animate-spin" />
-                          <span className="hidden sm:inline">{t.processing}</span>
+                          <Loader2 className="w-6 h-6 animate-spin" />
+                          <span className="hidden sm:inline font-display tracking-wide">{t.processing}</span>
                         </>
                       ) : (
                         <>
-                          <Download className="w-5 h-5" />
-                          <span className="hidden sm:inline">{t.downloadBtn}</span>
+                          <Download className="w-6 h-6 group-hover/btn:-translate-y-1 transition-transform" />
+                          <span className="hidden sm:inline font-display tracking-wide">{currentLang.code === 'ar' ? 'تـحـلـيـل' : 'Analyze'}</span>
                         </>
                       )}
                     </button>
@@ -377,9 +473,9 @@ export default function App() {
               {/* Error Message */}
               <AnimatePresence>
                 {error && (
-                  <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="w-full max-w-2xl bg-red-500/10 border border-red-500/20 text-red-400 p-4 rounded-xl flex items-center gap-3 mb-8 backdrop-blur-md">
-                    <AlertCircle className="w-6 h-6 shrink-0" />
-                    <p className="text-sm font-medium">{error}</p>
+                  <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="w-full max-w-3xl bg-red-500/10 border border-red-500/30 text-red-600 dark:text-red-400 p-5 rounded-2xl flex items-center gap-4 mb-8 backdrop-blur-md shadow-xl">
+                    <AlertCircle className="w-7 h-7 shrink-0" />
+                    <p className="text-base font-medium">{error}</p>
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -387,148 +483,55 @@ export default function App() {
               {/* Results Area */}
               <AnimatePresence>
                 {videoInfo && (
-                  <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-4xl bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-6 md:p-8 flex flex-col md:flex-row gap-8 shadow-2xl">
-                    
-                    {/* Thumbnail & Basic Info */}
-                    <div className="w-full md:w-1/3 flex flex-col gap-4">
-                      <div className="relative rounded-2xl overflow-hidden aspect-video md:aspect-square shadow-lg bg-black/50 border border-white/10 group">
-                        {previewState === 'playing' ? (
-                           <video src={`/api/stream?taskId=${taskId}${previewFormatId ? '&formatId='+previewFormatId : ''}`} controls autoPlay className="w-full h-full object-contain bg-black" />
-                        ) : videoInfo.thumbnail ? (
-                          <img src={videoInfo.thumbnail} alt={videoInfo.title} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" referrerPolicy="no-referrer" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-slate-600">
-                            <FileVideo className="w-12 h-12" />
-                          </div>
-                        )}
-                        {previewState !== 'playing' && (
-                          <div className="absolute bottom-3 right-3 bg-black/80 backdrop-blur-sm px-2.5 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 text-white/90">
-                            <Clock className="w-3 h-3 text-blue-400" />
-                            {formatDuration(videoInfo.duration)}
-                          </div>
-                        )}
-                        {previewState !== 'playing' && (
-                          <button onClick={() => setPreviewState('playing')} className="absolute inset-0 m-auto w-14 h-14 flex items-center justify-center bg-blue-500/80 hover:bg-blue-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-sm shadow-xl" title={t.previewBtn}>
-                            <Play className="w-6 h-6 ml-1" />
-                          </button>
-                        )}
-                      </div>
-                      
-                      <div className="flex flex-col gap-3 text-sm text-slate-300 bg-white/5 p-4 rounded-2xl border border-white/5">
-                        <div className="flex items-center gap-3">
-                          <User className="w-4 h-4 text-blue-400 shrink-0" />
-                          <span className="truncate">{videoInfo.uploader || 'Unknown'}</span>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <Globe className="w-4 h-4 text-purple-400 shrink-0" />
-                          <span className="capitalize">{videoInfo.extractor}</span>
-                        </div>
-                      </div>
+                  <ResultCard 
+                    key={taskId}
+                    videoInfo={videoInfo} 
+                    translations={t}
+                    onDownload={(fmt, isAudio) => handleDownload(fmt, isAudio)}
+                    onConvertGif={(fmt) => handleConvertGif(fmt)}
+                    downloadingState={{ formatId: downloadingFormatId, isDownloading: !!downloadingFormatId, isGif: isGifDownload }}
+                  />
+                )}
+                
+                {batchResults && batchResults.length > 0 && (
+                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="w-full flex flex-col gap-8">
+                    <div className="w-full flex items-center gap-3 mt-4 text-white">
+                       <CheckCircle2 className="w-6 h-6 text-green-400" />
+                       <h2 className="text-xl font-bold font-display">Batch Processing Successful ({batchResults.length})</h2>
                     </div>
-
-                    {/* Formats & Title */}
-                    <div className="w-full md:w-2/3 flex flex-col">
-                      <h2 className="text-xl md:text-2xl font-bold leading-tight mb-6 line-clamp-2 text-white/90" dir="auto">
-                        {videoInfo.title}
-                      </h2>
-                      
-                      <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
-                        <HardDrive className="w-4 h-4 text-blue-400" />
-                        {t.downloadOptions}
-                      </h3>
-                      
-                      <div className="flex flex-col gap-3 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
-                        {videoInfo.formats.length > 0 ? videoInfo.formats.map((format, idx) => {
-                          const isDownloading = downloadingFormatId === format.format_id;
-                          const resLabel = format.resolution === 'صوت فقط' ? t.audioOnly : format.resolution;
-                          
-                          return (
-                            <div key={idx} className={`relative overflow-hidden bg-white/5 hover:bg-white/10 border border-white/10 rounded-2xl p-4 flex items-center justify-between transition-all group ${isDownloading ? 'ring-2 ring-blue-500/50 bg-blue-500/5' : ''}`}>
-                              
-                              {/* Progress Bar Background */}
-                              {isDownloading && downloadProgress && (
-                                <div className="absolute inset-0 bg-blue-500/10 origin-left transition-all duration-300" style={{ width: `${downloadProgress.percentage}%` }} />
-                              )}
-
-                              <div className="relative z-10 flex flex-col gap-1.5">
-                                <span className="font-bold text-white flex items-center gap-2" dir="ltr">
-                                  {!format.vcodec ? <Music className="w-4 h-4 text-purple-400" /> : <FileVideo className="w-4 h-4 text-blue-400" />}
-                                  <span className="text-lg">{resLabel}</span>
-                                </span>
-                                <span className="text-xs text-slate-400 flex items-center gap-2 font-mono">
-                                  <span className="uppercase font-semibold text-slate-300">{format.ext}</span>
-                                  {format.filesize ? (
-                                    <>
-                                      <span className="w-1 h-1 rounded-full bg-slate-600"></span>
-                                      <span>{(format.filesize / (1024 * 1024)).toFixed(1)} MB</span>
-                                    </>
-                                  ) : null}
-                                </span>
-                              </div>
-
-                              <div className="relative z-10 flex items-center gap-3">
-                                {isDownloading && downloadProgress ? (
-                                  <div className="text-right flex flex-col gap-1 mr-3">
-                                    <span className="text-blue-400 font-bold text-sm">{downloadProgress.percentage}%</span>
-                                    <span className="text-[10px] text-slate-400 font-mono">
-                                      {(downloadProgress.loaded / (1024*1024)).toFixed(1)} / {(downloadProgress.total / (1024*1024)).toFixed(1)} MB
-                                    </span>
-                                  </div>
-                                ) : null}
-                                
-                                <div className="flex items-center gap-2">
-                                  {format.vcodec && (
-                                     <button
-                                       onClick={() => { setPreviewFormatId(format.format_id); setPreviewState('playing'); }}
-                                       className="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-white transition-all shadow-lg"
-                                       title={t.previewBtn}
-                                     >
-                                       <Play className="w-4 h-4 text-green-400" />
-                                     </button>
-                                  )}
-                                  <button
-                                     onClick={() => {
-                                       navigator.clipboard.writeText(`${window.location.origin}/api/download?taskId=${taskId}&formatId=${format.format_id}`);
-                                       setCopiedFormatId(format.format_id);
-                                       setTimeout(() => setCopiedFormatId(null), 2000);
-                                     }}
-                                     className="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-white transition-all shadow-lg group/copy relative"
-                                     title={t.copyLinkBtn}
-                                  >
-                                     {copiedFormatId === format.format_id ? (
-                                       <Check className="w-4 h-4 text-green-400" />
-                                     ) : (
-                                       <Copy className="w-4 h-4 text-slate-300 group-active/copy:text-green-400" />
-                                     )}
-                                     {copiedFormatId === format.format_id && (
-                                       <span className="absolute -top-8 left-1/2 -translate-x-1/2 bg-black/80 text-white text-[10px] px-2 py-1 rounded-md whitespace-nowrap">{t.linkCopied}</span>
-                                     )}
-                                  </button>
-                                  <button
-                                    onClick={() => handleDownload(format)}
-                                    disabled={!!downloadingFormatId}
-                                    className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:bg-white/10 disabled:text-slate-500 text-white text-sm font-semibold transition-all flex items-center gap-2 shadow-lg"
-                                  >
-                                    {isDownloading ? (
-                                      <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
-                                    ) : (
-                                      <Download className="w-4 h-4" />
-                                    )}
-                                  </button>
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        }) : (
-                          <div className="text-center p-8 text-slate-400 bg-white/5 rounded-2xl border border-white/10">
-                            {t.noFormats}
-                          </div>
-                        )}
-                      </div>
-                    </div>
+                    {batchResults.map((res) => (
+                      <ResultCard 
+                        key={res.taskId}
+                        videoInfo={res.info} 
+                        translations={t}
+                        onDownload={(fmt, isAudio) => handleDownload(fmt, isAudio, res.taskId)}
+                        onConvertGif={(fmt) => handleConvertGif(fmt, res.taskId)}
+                        downloadingState={{ formatId: downloadingFormatId, isDownloading: !!downloadingFormatId, isGif: isGifDownload }}
+                      />
+                    ))}
                   </motion.div>
                 )}
               </AnimatePresence>
+
+              {/* Download History Section */}
+              {history.length > 0 && !videoInfo && !batchResults && (
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="w-full max-w-3xl mt-12 bg-white/5 dark:bg-black/20 backdrop-blur-lg border border-white/10 rounded-3xl p-6 shadow-xl">
+                  <h3 className="text-lg font-bold flex items-center gap-2 mb-4 text-slate-800 dark:text-slate-200">
+                    <History className="w-5 h-5" /> {currentLang.code === 'ar' ? 'سجل التحميلات' : 'Download History'}
+                  </h3>
+                  <div className="flex flex-col gap-2 max-h-64 overflow-y-auto custom-scrollbar pr-2">
+                    {history.map((h, i) => (
+                      <div key={i} className="flex items-center justify-between p-3 rounded-xl bg-white/10 dark:bg-white/5 hover:bg-white/20 dark:hover:bg-white/10 transition-colors cursor-pointer group" onClick={() => { setUrl(h.url); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
+                        <div className="flex flex-col truncate w-3/4">
+                          <span className="font-semibold text-sm truncate text-slate-900 dark:text-slate-100">{h.title}</span>
+                          <span className="text-xs text-slate-600 dark:text-slate-400 flex items-center gap-1"><LinkIcon className="w-3 h-3" /> {h.extractor}</span>
+                        </div>
+                        <Download className="w-4 h-4 text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+                      </div>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
             </div>
             </>
           } />
@@ -561,6 +564,7 @@ export default function App() {
         </div>
       </footer>
     </div>
+    </>
   );
 }
 

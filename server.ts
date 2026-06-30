@@ -8,6 +8,13 @@ import crypto from "crypto";
 import { execFile, spawn } from "child_process";
 import { createServer as createViteServer } from "vite";
 import multer from "multer";
+import ffmpeg from "fluent-ffmpeg";
+import ffmpegStatic from "ffmpeg-static";
+import * as archiver from "archiver";
+
+if (ffmpegStatic) {
+  ffmpeg.setFfmpegPath(ffmpegStatic);
+}
 
 const app = express();
 const PORT = parseInt(process.env.PORT as string, 10) || 3000;
@@ -682,6 +689,73 @@ app.post("/api/upload-cookies/:platform", upload.single("cookiesFile"), (req, re
     success: true,
     message: `تم رفع ملف الكوكيز للمنصة ${req.params.platform} بنجاح.`
   });
+});
+
+// 5. نقطة النهاية لتحليل دفعة روابط
+app.post("/api/batch-analyze", async (req, res) => {
+  try {
+    const { urls } = req.body;
+    if (!Array.isArray(urls) || urls.length === 0) {
+      return res.status(400).json({ success: false, error: "قائمة الروابط غير صالحة" });
+    }
+
+    // Since our existing analyze is robust but deeply integrated in the route, 
+    // we can process them concurrently by hitting our own /api/analyze endpoint 
+    // or we can let the client do it. But to fulfill the server-side requirement:
+    const baseUrl = `http://localhost:${PORT}`;
+    const results = await Promise.allSettled(
+      urls.map(url => 
+        fetch(`${baseUrl}/api/analyze`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url })
+        }).then(r => r.json())
+      )
+    );
+    
+    res.json({ success: true, results });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: "فشل التحليل الدفعي" });
+  }
+});
+
+// 6. نقطة النهاية لتحويل الفيديو لـ GIF
+app.get("/api/convert-gif", async (req, res) => {
+  try {
+    const { taskId, formatId } = req.query;
+    if (!taskId || !formatId) return res.status(400).json({ error: "معلمات ناقصة" });
+
+    const cachedData = cache.get(taskId as string);
+    if (!cachedData) return res.status(404).json({ error: "انتهت الجلسة" });
+
+    res.setHeader('Content-Type', 'image/gif');
+    res.setHeader('Content-Disposition', `attachment; filename="preview.gif"`);
+
+    const url = cachedData.originalUrl;
+    const cookiePath = cachedData.cookiePath;
+
+    const args = ["-f", formatId as string, "-o", "-", "--download-sections", "*00:00:00-00:00:10"];
+    if (cookiePath && fs.existsSync(cookiePath)) {
+      args.push("--cookies", cookiePath);
+    }
+    args.push(url);
+
+    const ytdlp = spawn(YTDLP_PATH, args);
+
+    ffmpeg(ytdlp.stdout)
+      .format('gif')
+      .outputOptions(['-vf', 'fps=10,scale=320:-1:flags=lanczos'])
+      .on('error', (err) => {
+        console.error("FFmpeg error:", err);
+        if (!res.headersSent) res.status(500).end();
+      })
+      .pipe(res, { end: true });
+
+    ytdlp.on('error', (err) => console.error("yt-dlp error:", err));
+  } catch (e) {
+    console.error(e);
+    res.status(500).end();
+  }
 });
 
 // 5. نقطة النهاية للاتصال بنا
