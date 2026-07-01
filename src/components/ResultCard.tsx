@@ -9,12 +9,9 @@ interface ResultCardProps {
   taskId: string;
   videoInfo: any;
   translations: any;
-  onDownload: (formatId: string, isAudio: boolean) => void | Promise<void>;
-  onConvertGif: (formatId: string) => void;
-  downloadingState: { formatId: string | null; isDownloading: boolean; isGif: boolean };
 }
 
-export default function ResultCard({ taskId, videoInfo, translations: t, onDownload, downloadingState }: ResultCardProps) {
+export default function ResultCard({ taskId, videoInfo, translations: t }: ResultCardProps) {
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedShare, setCopiedShare] = useState(false);
   const [activeModal, setActiveModal] = useState<'video' | 'audio' | null>(null);
@@ -117,7 +114,6 @@ export default function ResultCard({ taskId, videoInfo, translations: t, onDownl
           <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 space-y-4">
             {isVideo ? processedVideoFormats.map((item: any, idx) => {
               const { resolution, format } = item;
-              const isDownloadingThis = downloadingState.isDownloading && downloadingState.formatId === format.format_id;
               
               return (
                 <div key={idx} className="bg-slate-800/50 border border-slate-700 hover:border-blue-500/50 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition-colors">
@@ -137,18 +133,37 @@ export default function ResultCard({ taskId, videoInfo, translations: t, onDownl
                       <span className="text-slate-300 font-medium">{formatFileSize(format.filesize)}</span>
                     </div>
                   </div>
-                  <button
-                    disabled={downloadingState.isDownloading}
-                    onClick={() => { playSound('click'); onDownload(format.format_id, false); setActiveModal(null); }}
-                    className="w-full sm:w-auto px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                  <a
+                    href={`/api/download?taskId=${taskId}&formatId=${format.format_id}`}
+                    download={`${(videoInfo?.title || 'video').replace(/[^\w\s\u0600-\u06FF-]/gi, '').trim().replace(/\s+/g, '_')}_${resolution || 'video'}.${format.ext || 'mp4'}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => { 
+                      playSound('click'); 
+                      setActiveModal(null); 
+                      // عرض مؤشر بصري بسيط بأن التحميل بدأ بدون التأثير على آلية تنزيل المتصفح
+                      if (document.body) {
+                        const progressContainer = document.createElement('div');
+                        progressContainer.className = 'fixed bottom-4 right-4 bg-slate-800 text-white px-4 py-3 rounded-lg shadow-xl flex items-center gap-3 z-50 animate-in slide-in-from-bottom-5';
+                        progressContainer.innerHTML = '<div class="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div><span class="font-medium">جاري بدء التحميل...</span>';
+                        document.body.appendChild(progressContainer);
+                        setTimeout(() => {
+                          if (document.body.contains(progressContainer)) {
+                            progressContainer.style.opacity = '0';
+                            progressContainer.style.transition = 'opacity 0.3s ease';
+                            setTimeout(() => document.body.removeChild(progressContainer), 300);
+                          }
+                        }, 1500);
+                      }
+                    }}
+                    className={`w-full sm:w-auto px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold transition-all flex items-center justify-center gap-2`}
                   >
-                    {isDownloadingThis ? <Loader2 className="w-5 h-5 animate-spin" /> : <Download className="w-5 h-5" />}
+                    <Download className="w-5 h-5" />
                     Download
-                  </button>
+                  </a>
                 </div>
               );
             }) : bestAudioFormats.map((format: any, idx) => {
-              const isDownloadingThis = downloadingState.isDownloading && downloadingState.formatId === format.format_id;
               
               return (
                 <div key={idx} className="bg-slate-800/50 border border-slate-700 hover:border-green-500/50 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition-colors">
@@ -162,14 +177,34 @@ export default function ResultCard({ taskId, videoInfo, translations: t, onDownl
                       <span className="text-slate-300 font-medium">{formatFileSize(format.filesize)}</span>
                     </div>
                   </div>
-                  <button
-                    disabled={downloadingState.isDownloading}
-                    onClick={() => { playSound('click'); onDownload(format.format_id, true); setActiveModal(null); }}
-                    className="w-full sm:w-auto px-6 py-3 rounded-xl bg-green-600 hover:bg-green-500 text-white font-bold transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                  <a
+                    href={`/api/download?taskId=${taskId}&formatId=${format.format_id}`}
+                    download={`${(videoInfo?.title || 'audio').replace(/[^\w\s\u0600-\u06FF-]/gi, '').trim().replace(/\s+/g, '_')}_audio.${format.ext || 'mp3'}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => { 
+                      playSound('click'); 
+                      setActiveModal(null); 
+                      // عرض مؤشر بصري بسيط بأن التحميل بدأ بدون التأثير على آلية تنزيل المتصفح
+                      if (document.body) {
+                        const progressContainer = document.createElement('div');
+                        progressContainer.className = 'fixed bottom-4 right-4 bg-slate-800 text-white px-4 py-3 rounded-lg shadow-xl flex items-center gap-3 z-50 animate-in slide-in-from-bottom-5';
+                        progressContainer.innerHTML = '<div class="w-5 h-5 border-2 border-green-500 border-t-transparent rounded-full animate-spin"></div><span class="font-medium">جاري بدء التحميل...</span>';
+                        document.body.appendChild(progressContainer);
+                        setTimeout(() => {
+                          if (document.body.contains(progressContainer)) {
+                            progressContainer.style.opacity = '0';
+                            progressContainer.style.transition = 'opacity 0.3s ease';
+                            setTimeout(() => document.body.removeChild(progressContainer), 300);
+                          }
+                        }, 1500);
+                      }
+                    }}
+                    className={`w-full sm:w-auto px-6 py-3 rounded-xl bg-green-600 hover:bg-green-500 text-white font-bold transition-all flex items-center justify-center gap-2`}
                   >
-                    {isDownloadingThis ? <Loader2 className="w-5 h-5 animate-spin" /> : <Download className="w-5 h-5" />}
+                    <Download className="w-5 h-5" />
                     Download
-                  </button>
+                  </a>
                 </div>
               );
             })}

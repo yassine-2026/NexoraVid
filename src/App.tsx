@@ -113,10 +113,7 @@ export default function App() {
     try { return JSON.parse(localStorage.getItem('dlHistory') || '[]'); } catch { return []; }
   });
 
-  // Download state
-  const [downloadingFormatId, setDownloadingFormatId] = useState<string | null>(null);
-  const [downloadProgress, setDownloadProgress] = useState<{ loaded: number; total: number; percentage: number } | null>(null);
-  const [isGifDownload, setIsGifDownload] = useState(false);
+  // Download state (removed as downloads are handled via native browser mechanics)
 
   useEffect(() => {
     localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
@@ -217,68 +214,6 @@ export default function App() {
       setError(t.networkError);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleDownload = async (formatId: string, isAudio: boolean, specificTaskId?: string) => {
-    const tid = specificTaskId || taskId;
-    if (!tid || downloadingFormatId) return;
-    
-    setDownloadingFormatId(formatId);
-    setIsGifDownload(false);
-    
-    // Find format filesize
-    let targetFormat;
-    if (videoInfo) targetFormat = videoInfo.formats.find(f => f.format_id === formatId);
-    else if (batchResults) {
-      for (const res of batchResults) {
-        const f = res.info.formats.find(f => f.format_id === formatId);
-        if (f) targetFormat = f;
-      }
-    }
-
-    setDownloadProgress({ loaded: 0, total: targetFormat?.filesize || 0, percentage: 0 });
-    setError(null);
-    
-    try {
-      let downloadUrl = `/api/download?taskId=${tid}&formatId=${formatId}`;
-      if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-        downloadUrl = `/sw-download/download?taskId=${tid}&formatId=${formatId}`;
-      }
-      
-      // Cleanup video title for filename
-      const cleanTitle = videoInfo?.title.replace(/[^\w\s\u0600-\u06FF-]/gi, '').trim().replace(/\s+/g, '_') || 'video';
-      const filename = `${cleanTitle}.${targetFormat?.ext || (isAudio ? 'mp3' : 'mp4')}`;
-
-      // إنشاء رابط مخفي برمجياً لتنزيل الملف باستخدام المتصفح مباشرة
-      const link = document.createElement('a');
-      link.href = downloadUrl;
-      link.download = filename;
-      link.style.display = 'none';
-      document.body.appendChild(link);
-      
-      // محاكاة بدء التحميل بإظهار المؤشر
-      setDownloadProgress({ loaded: 0, total: targetFormat?.filesize || 0, percentage: 50 });
-      
-      // تشغيل التحميل
-      link.click();
-      
-      // تنظيف العناصر من الواجهة بعد فترة قصيرة
-      setTimeout(() => {
-        document.body.removeChild(link);
-      }, 300);
-      
-      // نكتفي بعرض مؤشر "جاري بدء التحميل..." لمدة قصيرة حتى يبدأ المتصفح التنزيل
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      playSound('complete');
-      
-    } catch (err) {
-      console.error(err);
-      setError(t.downloadFailed);
-    } finally {
-      setDownloadingFormatId(null);
-      setDownloadProgress(null);
-      setIsGifDownload(false);
     }
   };
 
@@ -460,9 +395,7 @@ export default function App() {
                     taskId={taskId!}
                     videoInfo={videoInfo} 
                     translations={t}
-                    onDownload={(fmt, isAudio) => handleDownload(fmt, isAudio)}
                     onConvertGif={(fmt) => handleConvertGif(fmt)}
-                    downloadingState={{ formatId: downloadingFormatId, isDownloading: !!downloadingFormatId, isGif: isGifDownload }}
                   />
                 )}
                 
@@ -478,9 +411,7 @@ export default function App() {
                         taskId={res.taskId}
                         videoInfo={res.info} 
                         translations={t}
-                        onDownload={(fmt, isAudio) => handleDownload(fmt, isAudio, res.taskId)}
                         onConvertGif={(fmt) => handleConvertGif(fmt, res.taskId)}
-                        downloadingState={{ formatId: downloadingFormatId, isDownloading: !!downloadingFormatId, isGif: isGifDownload }}
                       />
                     ))}
                   </motion.div>
