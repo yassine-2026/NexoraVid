@@ -47,6 +47,16 @@ app.use(express.json());
 // تفعيل CORS للسماح بالطلبات من أي نطاق
 app.use(cors({ origin: '*' }));
 
+// Security Headers to prevent blocking in some embedded environments
+app.use((req, res, next) => {
+  res.header('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Range, Authorization');
+  res.header('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges, Content-Disposition');
+  next();
+});
+
 let downloadPromise: Promise<boolean> | null = null;
 
 // ذاكرة التخزين المؤقت (In-Memory Cache)
@@ -605,12 +615,28 @@ app.get("/api/stream", async (req, res) => {
 
     execFile(YTDLP_PATH, cmdArgs, { timeout: 30000 }, (error, stdout, stderr) => {
        if (error) {
+           console.error("yt-dlp -g error:", error.message, stderr);
            if (retryCount === 0 && !isFallback) {
               return streamVideo(requestedFormatId, false, 1);
            } else if (!isFallback) {
               return streamVideo("best[ext=mp4]/best", true, 0);
            } else {
-              return res.status(500).json({ success: false, error: "فشل استخراج رابط المعاينة" });
+              // Fallback: spawn yt-dlp to merge video and audio and stream it
+              const mergeArgs = ["-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best", "-o", "-", "--no-warnings"];
+              if (cookiePath) mergeArgs.push("--cookies", cookiePath);
+              mergeArgs.push("--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+              mergeArgs.push(originalUrl);
+              
+              const mergeProcess = spawn(YTDLP_PATH, mergeArgs);
+              res.setHeader('Content-Type', 'video/mp4');
+              res.setHeader('Cache-Control', 'no-cache');
+              mergeProcess.stdout.pipe(res);
+              
+              req.on('close', () => {
+                  if (!mergeProcess.killed) mergeProcess.kill();
+              });
+              
+              return;
            }
        }
        
@@ -620,8 +646,8 @@ app.get("/api/stream", async (req, res) => {
        }
        
        const range = req.headers.range;
-       const headers: any = {
-           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+       const headers: any = cachedData.info.http_headers ? { ...cachedData.info.http_headers } : {
+           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
        };
        if (range) {
            headers['Range'] = range;
@@ -629,7 +655,22 @@ app.get("/api/stream", async (req, res) => {
        
        fetch(streamUrl, { headers }).then(fetchRes => {
            if (!fetchRes.ok && fetchRes.status !== 206) {
-               throw new Error("Failed to fetch stream");
+               require("fs").appendFileSync("debug.log", "Fetch stream failed: " + fetchRes.status + " " + fetchRes.statusText + "\n");
+               // Fallback to yt-dlp merge/stream
+               const mergeArgs = ["-f", requestedFormatId, "-o", "-", "--no-warnings"];
+               if (cookiePath) mergeArgs.push("--cookies", cookiePath);
+               mergeArgs.push("--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+               mergeArgs.push(originalUrl);
+               
+               const mergeProcess = spawn(YTDLP_PATH, mergeArgs);
+               res.setHeader('Content-Type', 'video/mp4');
+               res.setHeader('Cache-Control', 'no-cache');
+               mergeProcess.stdout.pipe(res);
+               
+               req.on('close', () => {
+                   if (!mergeProcess.killed) mergeProcess.kill();
+               });
+               return;
            }
            
            if (fetchRes.status === 206 || fetchRes.status === 200) {

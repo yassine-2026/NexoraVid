@@ -1,0 +1,22 @@
+{
+  success: true,
+  taskId: '0c8e683e-f366-46ef-b605-63d2644f052e',
+  info: {
+    title: 'فراخ محشيه ارز بي الخضار #فراخ #دجاج #fyp #fypage #fypシ゚ #viral_video...',
+    thumbnail: 'https://p16-common-sign.tiktokcdn-eu.com/tos-alisg-p-0037/1b99f2ac1ebe4a5aa9bba0630966ac08_1728167056~tplv-tiktokx-origin.image?dr=10395&x-expires=1783069200&x-signature=9yjdlWgwRVQVpSaSYg4yE9CoY%2Fw%3D&t=4d5b0474&ps=13740610&shp=81f88b70&shcp=43f4a2f9&idc=useast2b',
+    duration: 177,
+    uploader: 'fatmascook',
+    extractor: 'TikTok',
+    formats: [
+      [Object], [Object],
+      [Object], [Object],
+      [Object], [Object],
+      [Object], [Object],
+      [Object], [Object],
+      [Object], [Object],
+      [Object], [Object],
+      [Object]
+    ]
+  },
+  fromCache: false
+}

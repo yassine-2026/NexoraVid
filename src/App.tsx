@@ -241,53 +241,36 @@ export default function App() {
     setError(null);
     
     try {
-      const downloadUrl = `/api/download?taskId=${tid}&formatId=${formatId}`;
-      const response = await fetch(downloadUrl);
-      
-      if (!response.ok || !response.body) {
-        throw new Error('Download failed');
+      let downloadUrl = `/api/download?taskId=${tid}&formatId=${formatId}`;
+      if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+        downloadUrl = `/sw-download/download?taskId=${tid}&formatId=${formatId}`;
       }
-
-      const contentLength = response.headers.get('content-length');
-      const total = contentLength ? parseInt(contentLength, 10) : (targetFormat?.filesize || 0);
-      let loaded = 0;
-
-      const reader = response.body.getReader();
-      const chunks: Uint8Array[] = [];
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (value) {
-          chunks.push(value);
-          loaded += value.length;
-          setDownloadProgress({
-            loaded,
-            total: total > 0 ? total : loaded,
-            percentage: total > 0 ? Math.round((loaded / total) * 100) : 100
-          });
-        }
-      }
-
-      // Convert chunks to Blob
-      const blob = new Blob(chunks, { type: response.headers.get('content-type') || 'application/octet-stream' });
-      const finalUrl = URL.createObjectURL(blob);
       
       // Cleanup video title for filename
       const cleanTitle = videoInfo?.title.replace(/[^\w\s\u0600-\u06FF-]/gi, '').trim().replace(/\s+/g, '_') || 'video';
       const filename = `${cleanTitle}.${targetFormat?.ext || (isAudio ? 'mp3' : 'mp4')}`;
 
-      // Create hidden link and click
-      const a = document.createElement('a');
-      a.href = finalUrl;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      playSound('complete');
+      // إنشاء رابط مخفي برمجياً لتنزيل الملف باستخدام المتصفح مباشرة
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = filename;
+      link.style.display = 'none';
+      document.body.appendChild(link);
       
-      // Free memory
-      setTimeout(() => URL.revokeObjectURL(finalUrl), 10000);
+      // محاكاة بدء التحميل بإظهار المؤشر
+      setDownloadProgress({ loaded: 0, total: targetFormat?.filesize || 0, percentage: 50 });
+      
+      // تشغيل التحميل
+      link.click();
+      
+      // تنظيف العناصر من الواجهة بعد فترة قصيرة
+      setTimeout(() => {
+        document.body.removeChild(link);
+      }, 300);
+      
+      // نكتفي بعرض مؤشر "جاري بدء التحميل..." لمدة قصيرة حتى يبدأ المتصفح التنزيل
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      playSound('complete');
       
     } catch (err) {
       console.error(err);
@@ -474,6 +457,7 @@ export default function App() {
                 {videoInfo && (
                   <ResultCard 
                     key={taskId}
+                    taskId={taskId!}
                     videoInfo={videoInfo} 
                     translations={t}
                     onDownload={(fmt, isAudio) => handleDownload(fmt, isAudio)}
@@ -491,6 +475,7 @@ export default function App() {
                     {batchResults.map((res) => (
                       <ResultCard 
                         key={res.taskId}
+                        taskId={res.taskId}
                         videoInfo={res.info} 
                         translations={t}
                         onDownload={(fmt, isAudio) => handleDownload(fmt, isAudio, res.taskId)}
